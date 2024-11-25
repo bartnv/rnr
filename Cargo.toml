@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-job_scheduler_ng = "2"
+cron = "0"
+chrono = "0"
 git-version = "*"
+yaml-rust2 = "0"
