@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use std::{ env, error, path, str::FromStr, sync };
 use git_version::git_version;
 use tokio::{fs, io::AsyncReadExt as _};
@@ -18,13 +19,19 @@ enum Schedule {
     Continuous,
     Schedule(cron::Schedule)
 }
+impl Clone for Schedule {
+    fn clone(&self) -> Schedule {
+        Schedule::None // Cloned Jobs don't need to know their schedule
+    }
+}
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Job {
     name: String,
     path: path::PathBuf,
     schedule: Schedule,
-    command: String
+    command: String,
+    lastrun: Option<chrono::DateTime<chrono::Local>>
 }
 impl Job {
     fn from_yaml(path: path::PathBuf, yaml: String) -> Option<Job> {
