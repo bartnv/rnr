@@ -9,10 +9,10 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
         for job in nextjobs.drain(..) {
             tokio::spawn(async move {
                 let name = job.name.clone();
-                let output = run_job(job).await;
-                match output.status.success() {
+                let job = run_job(job).await;
+                match job.lastresult.as_ref().unwrap().status.success() {
                     true => println!("Job {} finished successfully", name),
-                    false => println!("Job {} finished with error code {}", name, output.status.code().map_or("unknown".to_string(), |c| c.to_string()))
+                    false => println!("Job {} finished with error code {}", name, job.lastresult.unwrap().status.code().map_or("unknown".to_string(), |c| c.to_string()))
                 };
             });
         }
@@ -41,32 +41,37 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
     }
 }
 
-async fn run_job(mut job: Job) -> process::Output {
+async fn run_job(mut job: Job) -> Job {
     println!("{} Running {}", chrono::Local::now(), job.name);
-    let mut cmd = tokio::process::Command::new(job.command);
-    let output = cmd.output().await.unwrap();
+    let mut cmd = tokio::process::Command::new(&job.command[0]);
+    cmd.args(&job.command[1..]);
+    job.lastresult = match cmd.output().await {
+        Ok(output) => Some(output),
+        Err(e) => { job.error = Some(format!("Failed to run job {}: {}", job.name, e)); return job; }
+    };
+    let result = job.lastresult.as_ref().unwrap();
     job.path.push("runs");
     job.path.push(job.lastrun.unwrap().format("%Y-%m-%d %H:%M").to_string());
-    if tokio::fs::create_dir(&job.path).await.is_err() { return output }
+    if tokio::fs::create_dir(&job.path).await.is_err() { return job; }
     let mut filename = job.path.clone();
     filename.push("status");
     match tokio::fs::File::create(&filename).await {
-        Ok(mut file) => file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
-        Err(e) => { eprintln!("Failed to write status file: {}", e); return output; }
+        Ok(mut file) => file.write_all(result.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
+        Err(e) => { job.error = Some(format!("Failed to write status file: {}", e)); return job; }
     };
-    if output.stdout.len() > 0 {
+    if result.stdout.len() > 0 {
         filename.pop();
         filename.push("out");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&output.stdout).await.unwrap();
+            file.write_all(&result.stdout).await.unwrap();
         };
     }
-    if output.stderr.len() > 0 {
+    if result.stderr.len() > 0 {
         filename.pop();
         filename.push("err");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&output.stderr).await.unwrap();
+            file.write_all(&result.stderr).await.unwrap();
         };
     }
-    output
+    job
 }
