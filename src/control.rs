@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use std::sync;
 use tokio::sync::mpsc;
-use crate::{ Config, Job };
+use crate::{ Config, Job, duration_from };
 
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Receiver<Box<Job>>) {
     while let Some(update) = runner.recv().await {
@@ -17,8 +17,8 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
         }
         if let Some(run) = update.lastrun {
             match run.output.status.success() {
-                true => println!("Job {} finished successfully", update.name),
-                false => println!("Job {} finished with error code {}", update.name, run.output.status.code().map_or("unknown".to_string(), |c| c.to_string()))
+                true => println!("Job {} ran successfully in {}", update.name, duration_from(run.duration.as_secs())),
+                false => println!("Job {} failed after {} with error code {}", update.name, duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
             };
             job.lastrun = Some(run);
         }
