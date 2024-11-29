@@ -1,9 +1,10 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ env, error, path, process, str::FromStr, sync };
+use std::{ env, error, path, process, str::FromStr as _, sync, time };
 use git_version::git_version;
-use tokio::{fs, io::AsyncReadExt as _};
+use tokio::{fs, io::AsyncReadExt as _, sync::mpsc };
 use yaml_rust2::YamlLoader;
 
+mod control;
 mod runner;
 
 const VERSION: &str = git_version!();
@@ -19,21 +20,36 @@ enum Schedule {
     Continuous,
     Schedule(cron::Schedule)
 }
-impl Clone for Schedule {
-    fn clone(&self) -> Schedule {
-        Schedule::None // Cloned Jobs don't need to know their schedule
-    }
+
+#[derive(Debug)]
+struct Run {
+    start: chrono::DateTime<chrono::Local>,
+    duration: time::Duration,
+    output: process::Output
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Job {
     name: String,
     path: path::PathBuf,
     schedule: Schedule,
     command: Vec<String>,
     error: Option<String>,
-    lastrun: Option<chrono::DateTime<chrono::Local>>,
-    lastresult: Option<process::Output>
+    laststart: Option<chrono::DateTime<chrono::Local>>,
+    lastrun: Option<Run>
+}
+impl Clone for Job {
+    fn clone(&self) -> Job {
+        Job {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            schedule: Schedule::None,
+            command: self.command.clone(),
+            error: None,
+            laststart: None,
+            lastrun: None
+        }
+    }
 }
 impl Job {
     fn from_yaml(path: path::PathBuf, yaml: String) -> Option<Job> {
@@ -98,15 +114,26 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                 }
             };
             if let Some(job) = job {
+                if let Some(e) = job.error {
+                    eprintln!("Job {} permanent error: {}", job.name, e);
+                    continue;
+                }
                 println!("Found job \"{}\" to run: {}", job.name, job.command[0]);
                 if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
                 wconfig.jobs.push(job);
             }
         }
     }
-    let rnr = tokio::spawn(async move {
-        runner::run(config.clone()).await;
+    let (tx, rx) = mpsc::channel(100);
+    let aconfig = config.clone();
+    let ctrl = tokio::spawn(async move {
+        control::run(aconfig.clone(), rx).await;
     });
+    let rnr = tokio::spawn(async move {
+        runner::run(config.clone(), tx).await;
+    });
+    tokio::join!(ctrl).0.unwrap();
     tokio::join!(rnr).0.unwrap();
+    println!("Exiting");
     Ok(())
 }

@@ -1,19 +1,17 @@
-use std::{ path, process, sync };
-use tokio::io::AsyncWriteExt as _;
+use std::{ path, process, sync, time };
+use tokio::{ io::AsyncWriteExt as _, sync::mpsc };
 
-use crate::{ Config, Job, Schedule };
+use crate::{ Config, Job, Run, Schedule };
 
-pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
-    let mut nextjobs: Vec<Job> = vec![];
+pub async fn run(config: sync::Arc<sync::RwLock<Config>>, control: mpsc::Sender<Box<Job>>) {
+    let mut nextjobs: Vec<Box<Job>> = vec![];
     loop {
         for job in nextjobs.drain(..) {
+            let acontrol = control.clone();
             tokio::spawn(async move {
                 let name = job.name.clone();
                 let job = run_job(job).await;
-                match job.lastresult.as_ref().unwrap().status.success() {
-                    true => println!("Job {} finished successfully", name),
-                    false => println!("Job {} finished with error code {}", name, job.lastresult.unwrap().status.code().map_or("unknown".to_string(), |c| c.to_string()))
-                };
+                acontrol.send(job).await.unwrap();
             });
         }
         tokio::task::yield_now().await;
@@ -29,8 +27,8 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
                         nextjobs.clear();
                         nextloop = nextrun.clone();
                     }
-                    let mut job = job.clone();
-                    job.lastrun = Some(nextrun);
+                    let mut job = Box::new(job.clone());
+                    job.laststart = Some(nextrun);
                     nextjobs.push(job);
                 }
             }
@@ -41,36 +39,38 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
     }
 }
 
-async fn run_job(mut job: Job) -> Job {
+async fn run_job(mut job: Box<Job>) -> Box<Job> {
     println!("{} Running {}", chrono::Local::now(), job.name);
     let mut cmd = tokio::process::Command::new(&job.command[0]);
     cmd.args(&job.command[1..]);
-    job.lastresult = match cmd.output().await {
-        Ok(output) => Some(output),
-        Err(e) => { job.error = Some(format!("Failed to run job {}: {}", job.name, e)); return job; }
+    let start = time::Instant::now();
+    let output = match cmd.output().await {
+        Ok(output) => output,
+        Err(e) => { job.error = Some(format!("Failed to start: {}", e)); return job; }
     };
-    let result = job.lastresult.as_ref().unwrap();
-    job.path.push("runs");
-    job.path.push(job.lastrun.unwrap().format("%Y-%m-%d %H:%M").to_string());
-    if tokio::fs::create_dir(&job.path).await.is_err() { return job; }
+    job.lastrun = Some(Run { start: job.laststart.as_ref().unwrap().clone(), duration: start.elapsed(), output });
+    let output = &job.lastrun.as_ref().unwrap().output;
     let mut filename = job.path.clone();
+    filename.push("runs");
+    filename.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
+    if tokio::fs::create_dir(&filename).await.is_err() { return job; }
     filename.push("status");
     match tokio::fs::File::create(&filename).await {
-        Ok(mut file) => file.write_all(result.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
+        Ok(mut file) => file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
         Err(e) => { job.error = Some(format!("Failed to write status file: {}", e)); return job; }
     };
-    if result.stdout.len() > 0 {
+    if output.stdout.len() > 0 {
         filename.pop();
         filename.push("out");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&result.stdout).await.unwrap();
+            file.write_all(&output.stdout).await.unwrap();
         };
     }
-    if result.stderr.len() > 0 {
+    if output.stderr.len() > 0 {
         filename.pop();
         filename.push("err");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&result.stderr).await.unwrap();
+            file.write_all(&output.stderr).await.unwrap();
         };
     }
     job
