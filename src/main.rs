@@ -92,12 +92,19 @@ impl Job {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn error::Error>> {
-    let cwd = env::current_dir()?;
+async fn main() -> process::ExitCode {
+    let cwd = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => { eprintln!("Failed to find current working directory"); return process::ExitCode::FAILURE; }
+    };
     println!("Starting rnr {} in {}", VERSION, cwd.display());
     let config = sync::Arc::new(sync::RwLock::new(Config { jobs: vec![] }));
     {
         let mut dir = fs::read_dir(".").await?;
+        let mut dir = match fs::read_dir(".").await {
+            Ok(dir) => dir,
+            Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
+        };
         let mut wconfig = config.write().unwrap();
         while let Ok(Some(entry)) = dir.next_entry().await {
             let path = entry.path();
@@ -105,7 +112,10 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
             let job = match fs::File::open(&path.join("job.yml")).await {
                 Ok(mut file) => {
                     let mut contents = vec![];
-                    file.read_to_end(&mut contents).await?;
+                    if let Err(e) = file.read_to_end(&mut contents).await {
+                        println!("Failed to read job.yml in directory \"{}\": {}", path.display(), e.to_string());
+                        continue;
+                    }
                     Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
                 }
                 Err(_) => {
@@ -134,8 +144,7 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     });
     tokio::join!(ctrl).0.unwrap();
     tokio::join!(rnr).0.unwrap();
-    println!("Exiting");
-    Ok(())
+    process::ExitCode::SUCCESS
 }
 
 pub fn duration_from(mut secs: u64) -> String {
