@@ -10,3 +10,6 @@ chrono = "0"
 git-version = "*"
 yaml-rust2 = "0"
 shell-words = "1"
+
+[profile.release]
+strip = true
