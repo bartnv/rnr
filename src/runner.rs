@@ -1,22 +1,35 @@
 use std::{ path, process, sync, time };
 use tokio::{ io::AsyncWriteExt as _, sync::mpsc };
 
-use crate::{ Config, Job, Run, Schedule };
+use crate::{ control, Config, Job, Run, Schedule, duration_from };
 
-pub async fn run(config: sync::Arc<sync::RwLock<Config>>, control: mpsc::Sender<Box<Job>>) {
+pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
     let mut nextjobs: Vec<Box<Job>> = vec![];
-    loop {
-        for job in nextjobs.drain(..) {
-            let acontrol = control.clone();
+    let (ctrltx, ctrlrx) = mpsc::channel(100);
+    let (spawntx, mut spawnrx) = mpsc::channel(100);
+    let aconfig = config.clone();
+    let aspawntx = spawntx.clone();
+    let ctrl = tokio::spawn(async move {
+        control::run(aconfig.clone(), ctrlrx, aspawntx).await;
+    });
+    let spawn = tokio::spawn(async move {
+        while let Some(job) = spawnrx.recv().await {
+            let actrltx = ctrltx.clone();
             tokio::spawn(async move {
                 let name = job.name.clone();
                 let job = run_job(job).await;
-                acontrol.send(job).await.unwrap();
+                actrltx.send(job).await.unwrap();
             });
+        }
+    });
+
+    loop {
+        for job in nextjobs.drain(..) {
+            spawntx.send(job).await.unwrap();
         }
         tokio::task::yield_now().await;
 
-        let mut nextloop = chrono::Local::now() + chrono::TimeDelta::new(60, 0).unwrap();
+        let mut nextloop = chrono::Local::now() + chrono::TimeDelta::new(300, 0).unwrap();
         {
             let rconfig = config.read().unwrap();
             for job in &rconfig.jobs {
@@ -34,7 +47,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, control: mpsc::Sender<
             }
         }
         let wait = nextloop - chrono::Local::now();
-        println!("Next loop in {} seconds ({} jobs to run)", wait.num_seconds(), nextjobs.len());
+        println!("Next loop in {} ({} jobs to run)", duration_from(wait.num_seconds().try_into().unwrap()), nextjobs.len());
         tokio::time::sleep(wait.to_std().unwrap()).await;
     }
 }

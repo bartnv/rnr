@@ -18,6 +18,7 @@ enum Schedule {
     #[default]
     None,
     Continuous,
+    After(path::PathBuf),
     Schedule(cron::Schedule)
 }
 
@@ -60,11 +61,18 @@ impl Job {
         let config = &docs[0];
         let name = config["name"].as_str().unwrap_or(&path.display().to_string()).trim_start_matches("./").to_string();
         let schedule = match config["schedule"].as_str() {
-            Some(sched) => match sched {
-                "@continuous" => Schedule::Continuous,
-                sched => match cron::Schedule::from_str(sched) {
-                    Ok(sched) => Schedule::Schedule(sched),
-                    Err(err) => { return Some(Job::from_error(Some(name), path, format!("Failed to parse schedule expression: {}", err))); }
+            Some(sched) => {
+                let mut tokens = sched.split_ascii_whitespace();
+                match tokens.next().unwrap() {
+                    "@continuous" => Schedule::Continuous,
+                    "@after" => match tokens.next() {
+                        Some(path) => Schedule::After(path::PathBuf::from(path)),
+                        None => { return Some(Job::from_error(Some(name), path, format!("Invalid schedule expression: {}", sched))); }
+                    },
+                    _ => match cron::Schedule::from_str(sched) {
+                        Ok(sched) => Schedule::Schedule(sched),
+                        Err(err) => { return Some(Job::from_error(Some(name), path, format!("Failed to parse schedule expression: {}", err))); }
+                    }
                 }
             },
             None => Schedule::None
@@ -100,14 +108,13 @@ async fn main() -> process::ExitCode {
     println!("Starting rnr {} in {}", VERSION, cwd.display());
     let config = sync::Arc::new(sync::RwLock::new(Config { jobs: vec![] }));
     {
-        let mut dir = fs::read_dir(".").await?;
         let mut dir = match fs::read_dir(".").await {
             Ok(dir) => dir,
             Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
         };
         let mut wconfig = config.write().unwrap();
         while let Ok(Some(entry)) = dir.next_entry().await {
-            let path = entry.path();
+            let path = path::PathBuf::from(entry.file_name()); // Get the relative path
             if !path.is_dir() { continue; }
             let job = match fs::File::open(&path.join("job.yml")).await {
                 Ok(mut file) => {
@@ -119,30 +126,25 @@ async fn main() -> process::ExitCode {
                     Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
                 }
                 Err(_) => {
-                    println!("Directory {} has no job.yml file", path.display());
+                    println!("Directory \"{}\" has no job.yml file", path.display());
                     continue;
                 }
             };
             if let Some(job) = job {
                 if let Some(e) = job.error {
-                    eprintln!("Job {} permanent error: {}", job.name, e);
+                    eprintln!("Job \"{}\" permanent error: {}", job.name, e);
                     continue;
                 }
-                println!("Found job \"{}\" to run: {}", job.name, job.command[0]);
+                println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" "));
                 if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
+                if let Schedule::After(ref path) = job.schedule { println!("Execution after job with path {}", path.display()); }
                 wconfig.jobs.push(job);
             }
         }
     }
-    let (tx, rx) = mpsc::channel(100);
-    let aconfig = config.clone();
-    let ctrl = tokio::spawn(async move {
-        control::run(aconfig.clone(), rx).await;
-    });
     let rnr = tokio::spawn(async move {
-        runner::run(config.clone(), tx).await;
+        runner::run(config.clone()).await;
     });
-    tokio::join!(ctrl).0.unwrap();
     tokio::join!(rnr).0.unwrap();
     process::ExitCode::SUCCESS
 }
