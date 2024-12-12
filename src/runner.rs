@@ -1,24 +1,26 @@
 use std::{ path, process, sync, time };
-use tokio::{ io::AsyncWriteExt as _, sync::mpsc };
+use tokio::{ io::AsyncWriteExt as _, sync::{ broadcast, mpsc } };
 
 use crate::{ control, Config, Job, Run, Schedule, duration_from };
 
-pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
+pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
     let mut nextjobs: Vec<Box<Job>> = vec![];
     let (ctrltx, ctrlrx) = mpsc::channel(100);
     let (spawntx, mut spawnrx) = mpsc::channel(100);
     let aconfig = config.clone();
     let aspawntx = spawntx.clone();
     let ctrl = tokio::spawn(async move {
-        control::run(aconfig.clone(), ctrlrx, aspawntx).await;
+        control::run(aconfig.clone(), ctrlrx, aspawntx, broadcast).await;
     });
+    let aconfig = config.clone();
     let spawn = tokio::spawn(async move {
         while let Some(job) = spawnrx.recv().await {
-            let actrltx = ctrltx.clone();
+            let ctrltx = ctrltx.clone();
+            let config = aconfig.clone();
             tokio::spawn(async move {
                 let name = job.name.clone();
-                let job = run_job(job).await;
-                actrltx.send(job).await.unwrap();
+                let job = run_job(config, job).await;
+                ctrltx.send(job).await.unwrap();
             });
         }
     });
@@ -40,7 +42,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
                         nextjobs.clear();
                         nextloop = nextrun.clone();
                     }
-                    let mut job = Box::new(job.clone());
+                    let mut job = Box::new(job.clone_empty());
                     job.laststart = Some(nextrun);
                     nextjobs.push(job);
                 }
@@ -52,10 +54,13 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>) {
     }
 }
 
-async fn run_job(mut job: Box<Job>) -> Box<Job> {
+async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> Box<Job> {
     println!("{} Running {}", chrono::Local::now(), job.name);
     let mut cmd = tokio::process::Command::new(&job.command[0]);
     cmd.args(&job.command[1..]);
+    if let Ok(config) = config.read() {
+        cmd.envs(&config.env);
+    }
     let start = time::Instant::now();
     let output = match cmd.output().await {
         Ok(output) => output,

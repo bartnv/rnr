@@ -4,12 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+chrono = { version = "0", features = ["serde"] }
 cron = "0"
-chrono = "0"
+futures-util = "*"
 git-version = "*"
-yaml-rust2 = "0"
+http-body-util = "0"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-tungstenite = "*"
+hyper-util = { version ="*", features = ["tokio"] }
+serde = { version = "1", features = [ "derive" ] }
+serde_json = "*"
 shell-words = "1"
+tokio = { version = "1", features = ["full"] }
+yaml-rust2 = "0"
+
 
 [profile.release]
 strip = true

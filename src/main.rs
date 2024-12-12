@@ -1,19 +1,22 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ env, error, path, process, str::FromStr as _, sync, time };
+use std::{ collections::HashMap, env, error, io::BufRead as _, path, process, str::FromStr as _, sync::{ Arc, RwLock }, time };
 use git_version::git_version;
-use tokio::{fs, io::AsyncReadExt as _, sync::mpsc };
+use serde::Serialize;
+use tokio::{fs, io::AsyncReadExt as _, net, sync::{ broadcast, mpsc } };
 use yaml_rust2::YamlLoader;
 
 mod control;
 mod runner;
+mod web;
 
 const VERSION: &str = git_version!();
 
 struct Config {
-    jobs: Vec<Job>
+    jobs: Vec<Job>,
+    env: HashMap<String, String>
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 enum Schedule {
     #[default]
     None,
@@ -22,14 +25,28 @@ enum Schedule {
     Schedule(cron::Schedule)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Run {
     start: chrono::DateTime<chrono::Local>,
     duration: time::Duration,
     output: process::Output
 }
 
-#[derive(Debug, Default)]
+#[derive(Serialize)]
+struct JsonJob {
+    path: String,
+    name: String,
+    nextrun: Option<chrono::DateTime<chrono::Local>>,
+    after: Option<String>,
+    command: String,
+    error: Option<String>,
+    laststatus: Option<i32>,
+    lastrun: Option<chrono::DateTime<chrono::Local>>,
+    lastlog: usize,
+    lasterr: usize
+}
+
+#[derive(Clone, Debug, Default)]
 struct Job {
     name: String,
     path: path::PathBuf,
@@ -39,8 +56,8 @@ struct Job {
     laststart: Option<chrono::DateTime<chrono::Local>>,
     lastrun: Option<Run>
 }
-impl Clone for Job {
-    fn clone(&self) -> Job {
+impl Job {
+    fn clone_empty(&self) -> Job {
         Job {
             name: self.name.clone(),
             path: self.path.clone(),
@@ -51,8 +68,6 @@ impl Clone for Job {
             lastrun: None
         }
     }
-}
-impl Job {
     fn from_yaml(path: path::PathBuf, yaml: String) -> Option<Job> {
         let docs = match YamlLoader::load_from_str(&yaml) {
             Ok(config) => config,
@@ -97,6 +112,35 @@ impl Job {
         let name = name.unwrap_or(path.display().to_string().trim_start_matches("./").to_string());
         Job { name, path, error: Some(error), ..Default::default() }
     }
+    fn to_json(&self) -> JsonJob {
+        JsonJob {
+            path: self.path.display().to_string(),
+            name: self.name.clone(),
+            command: self.command.join(" "),
+            nextrun: match &self.schedule {
+                Schedule::Schedule(sched) => Some(sched.upcoming(chrono::Local).next().unwrap()),
+                _ => None
+            },
+            after: match &self.schedule {
+                Schedule::After(after) => Some(after.display().to_string()),
+                _ => None
+            },
+            error: self.error.clone(),
+            laststatus: match &self.lastrun {
+                Some(run) => Some(run.output.status.code().unwrap()),
+                None => None
+            },
+            lastrun: self.laststart.clone(),
+            lastlog: match &self.lastrun {
+                Some(run) => run.output.stdout.lines().count(),
+                None => 0
+            },
+            lasterr: match &self.lastrun {
+                Some(run) => run.output.stderr.lines().count(),
+                None => 0
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -106,7 +150,8 @@ async fn main() -> process::ExitCode {
         Err(e) => { eprintln!("Failed to find current working directory"); return process::ExitCode::FAILURE; }
     };
     println!("Starting rnr {} in {}", VERSION, cwd.display());
-    let config = sync::Arc::new(sync::RwLock::new(Config { jobs: vec![] }));
+    let config = Arc::new(RwLock::new(Config { jobs: vec![], env: HashMap::new() }));
+    process_config(&config).await;
     {
         let mut dir = match fs::read_dir(".").await {
             Ok(dir) => dir,
@@ -131,22 +176,60 @@ async fn main() -> process::ExitCode {
                 }
             };
             if let Some(job) = job {
-                if let Some(e) = job.error {
-                    eprintln!("Job \"{}\" permanent error: {}", job.name, e);
-                    continue;
-                }
-                println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" "));
+                if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
+                else { println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" ")); }
                 if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
                 if let Schedule::After(ref path) = job.schedule { println!("Execution after job with path {}", path.display()); }
                 wconfig.jobs.push(job);
             }
         }
     }
+    let (bctx, bcrx) = broadcast::channel(100);
+    let aconfig = config.clone();
+    let broadcast = bctx.clone();
     let rnr = tokio::spawn(async move {
-        runner::run(config.clone()).await;
+        runner::run(aconfig, broadcast).await;
     });
+
+    match net::TcpListener::bind("0.0.0.0:1234").await {
+        Ok(listener) => {
+            let aconfig = config.clone();
+            let web = tokio::spawn(async move {
+                web::run(aconfig, listener, bctx).await;
+            });
+        },
+        Err(e) => eprintln!("Failed to bind: {}", e)
+    };
+
     tokio::join!(rnr).0.unwrap();
     process::ExitCode::SUCCESS
+}
+
+async fn process_config(mut config: &Arc<RwLock<Config>>) {
+    let file = fs::File::open("rnr.yml").await;
+    if let Err(e) = file {
+        eprintln!("Failed to read rnr.yml configuration file");
+        return;
+    }
+    let mut contents = vec![];
+    if let Err(e) = file.unwrap().read_to_end(&mut contents).await {
+        eprintln!("Failed to read rnr.yml configuration file");
+        return;
+    }
+    let docs = match YamlLoader::load_from_str(&String::from_utf8_lossy(&contents)) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("Invalid YAML in configuration file: {}", err);
+            return;
+        }
+    };
+    let yaml = &docs[0];
+    if let Some(env) = yaml["env"].as_hash() {
+        let mut wconfig = config.write().unwrap();
+        for (key, value) in env  {
+            wconfig.env.insert(key.as_str().unwrap().to_owned(), value.as_str().unwrap().to_owned());
+        }
+    }
 }
 
 pub fn duration_from(mut secs: u64) -> String {
