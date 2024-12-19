@@ -1,25 +1,13 @@
-use std::{ fs, io::BufRead as _, path, process::ExitStatus, sync };
+use std::{ fs, io::BufRead as _, path, process::ExitStatus, sync::{ Arc, RwLock } };
 use futures_util::{SinkExt as _, StreamExt};
 use hyper::body;
 use hyper_util::rt::TokioIo;
-use serde::Serialize;
-use tokio::{ net, sync::broadcast };
+use serde::{Deserialize, Serialize};
+use tokio::{ net::TcpListener, sync::broadcast };
 
 use crate::{ Config, Job, JsonJob, Schedule };
 
-#[derive(Clone)]
-pub struct TokioExecutor;
-impl<F> hyper::rt::Executor<F> for TokioExecutor
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    fn execute(&self, fut: F) {
-        tokio::task::spawn(fut);
-    }
-}
-
-pub async fn run(config: sync::Arc<sync::RwLock<Config>>, listener: net::TcpListener, broadcast: broadcast::Sender<Job>) {
+pub async fn run(config: Arc<RwLock<Config>>, listener: TcpListener, broadcast: broadcast::Sender<Job>) {
     let http = hyper::server::conn::http1::Builder::new();
     let service = hyper::service::service_fn(move |req| {
         println!("Received HTTP request {} {}", req.method(), req.uri());
@@ -37,7 +25,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, listener: net::TcpList
     }
 }
 
-pub async fn handle_http(mut request: hyper::Request<body::Incoming>, config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::Receiver<Job>) -> Result<hyper::Response<http_body_util::Full<body::Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub async fn handle_http(mut request: hyper::Request<body::Incoming>, config: Arc<RwLock<Config>>, broadcast: broadcast::Receiver<Job>) -> Result<hyper::Response<http_body_util::Full<body::Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     if hyper_tungstenite::is_upgrade_request(&request) {
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
         tokio::spawn(async move {
@@ -52,30 +40,40 @@ pub async fn handle_http(mut request: hyper::Request<body::Incoming>, config: sy
             file if [ "/favicon.ico" ].contains(&file) => {
                 Ok(hyper::Response::new(http_body_util::Full::<body::Bytes>::from(fs::read(String::from("web") + file)?)))
             },
-            _ => Ok(hyper::Response::builder().status(hyper::StatusCode::NOT_FOUND).body(http_body_util::Full::<body::Bytes>::from("")).unwrap())
+            _ => Ok(hyper::Response::builder().status(hyper::StatusCode::NOT_FOUND).body(http_body_util::Full::<body::Bytes>::from(""))?)
         }
     }
 }
 
-pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: sync::Arc<sync::RwLock<Config>>, mut broadcast: broadcast::Receiver<Job>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc<RwLock<Config>>, mut broadcast: broadcast::Receiver<Job>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     #[derive(Default, Serialize)]
-    struct JsonGraph {
+    struct JsonMsg {
         msg: &'static str,
-        jobs: Vec<JsonJob>
+        jobs: Vec<JsonJob>,
+        details: Option<JsonDetails>
+    }
+    #[derive(Debug, Deserialize)]
+    struct JsonReq {
+        req: String,
+        path: String
+    }
+    #[derive(Default, Serialize)]
+    struct JsonDetails {
+        path: String,
+        log: String,
+        err: String
     }
 
     let (mut ws_tx, mut ws_rx) = ws.await?.split();
 
-    let mut res = JsonGraph { msg: "init", ..Default::default() };
+    let mut res = JsonMsg { msg: "init", ..Default::default() };
     {
         let rconfig = config.read().unwrap();
-
         for job in &rconfig.jobs {
             res.jobs.push(job.to_json());
         }
-
     }
-    ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res).unwrap())).await?;
+    ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
 
     loop {
         tokio::select!{
@@ -88,10 +86,40 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: syn
                                     hyper_tungstenite::tungstenite::Message::Text(text) => {
                                         match text.as_str() {
                                             "ping" => {
-                                                let res = JsonGraph { msg: "pong", ..Default::default() };
-                                                ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res).unwrap())).await?;
+                                                let res = JsonMsg { msg: "pong", ..Default::default() };
+                                                ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
                                             },
-                                            text => println!("Received websocket message: {}", text)
+                                            text => {
+                                                let req: JsonReq = serde_json::from_str(text)?;
+                                                match req.req.as_str() {
+                                                    "getlog" => {
+                                                        let mut res = None;
+                                                        {
+                                                            let rconfig = config.read().unwrap();
+                                                            for job in &rconfig.jobs {
+                                                                if job.path.to_string_lossy() == req.path {
+                                                                    if let Some(lastrun) = &job.lastrun {
+                                                                        res = Some(JsonDetails {
+                                                                            path: req.path,
+                                                                            log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
+                                                                            err: String::from_utf8_lossy(&lastrun.output.stderr).into_owned()
+                                                                        });
+                                                                    }
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                        if let Some(details) = res {
+                                                            let res = JsonMsg { msg: "details", jobs: vec![], details: Some(details) };
+                                                            ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?
+                                                        }
+                                                    },
+                                                    _ => {
+                                                        println!("Received unexpected websocket message: {}", text);
+                                                        continue;
+                                                    }
+                                                }
+                                            }
                                         }
                                     },
                                     other => println!("Received unexpected websocket message: {:?}", other)
@@ -106,9 +134,9 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: syn
             msg = broadcast.recv() => {
                 match msg {
                     Ok(job) => {
-                        let mut res = JsonGraph { msg: "update", ..Default::default() };
+                        let mut res = JsonMsg { msg: "update", jobs: vec![], ..Default::default() };
                         res.jobs.push(job.to_json());
-                        ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res).unwrap())).await?;
+                        ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
                     },
                     Err(e) => eprintln!("Broadcast channel error: {}", e)
                 }

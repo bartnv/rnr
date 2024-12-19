@@ -42,6 +42,7 @@ struct JsonJob {
     error: Option<String>,
     laststatus: Option<i32>,
     lastrun: Option<chrono::DateTime<chrono::Local>>,
+    lastdur: u64,
     lastlog: usize,
     lasterr: usize
 }
@@ -131,6 +132,10 @@ impl Job {
                 None => None
             },
             lastrun: self.laststart.clone(),
+            lastdur: match &self.lastrun {
+                Some(run) => run.duration.as_secs(),
+                None => 0
+            },
             lastlog: match &self.lastrun {
                 Some(run) => run.output.stdout.lines().count(),
                 None => 0
@@ -152,38 +157,11 @@ async fn main() -> process::ExitCode {
     println!("Starting rnr {} in {}", VERSION, cwd.display());
     let config = Arc::new(RwLock::new(Config { jobs: vec![], env: HashMap::new() }));
     process_config(&config).await;
-    {
-        let mut dir = match fs::read_dir(".").await {
-            Ok(dir) => dir,
-            Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
-        };
-        let mut wconfig = config.write().unwrap();
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let path = path::PathBuf::from(entry.file_name()); // Get the relative path
-            if !path.is_dir() { continue; }
-            let job = match fs::File::open(&path.join("job.yml")).await {
-                Ok(mut file) => {
-                    let mut contents = vec![];
-                    if let Err(e) = file.read_to_end(&mut contents).await {
-                        println!("Failed to read job.yml in directory \"{}\": {}", path.display(), e.to_string());
-                        continue;
-                    }
-                    Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
-                }
-                Err(_) => {
-                    println!("Directory \"{}\" has no job.yml file", path.display());
-                    continue;
-                }
-            };
-            if let Some(job) = job {
-                if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
-                else { println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" ")); }
-                if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
-                if let Schedule::After(ref path) = job.schedule { println!("Execution after job with path {}", path.display()); }
-                wconfig.jobs.push(job);
-            }
-        }
-    }
+    let mut dir = match fs::read_dir(".").await {
+        Ok(dir) => dir,
+        Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
+    };
+    read_jobs(&config, dir).await;
     let (bctx, bcrx) = broadcast::channel(100);
     let aconfig = config.clone();
     let broadcast = bctx.clone();
@@ -228,6 +206,35 @@ async fn process_config(mut config: &Arc<RwLock<Config>>) {
         let mut wconfig = config.write().unwrap();
         for (key, value) in env  {
             wconfig.env.insert(key.as_str().unwrap().to_owned(), value.as_str().unwrap().to_owned());
+        }
+    }
+}
+
+async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
+    let mut wconfig = config.write().unwrap();
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let path = path::PathBuf::from(entry.file_name()); // Get the relative path
+        if !path.is_dir() { continue; }
+        let job = match fs::File::open(&path.join("job.yml")).await {
+            Ok(mut file) => {
+                let mut contents = vec![];
+                if let Err(e) = file.read_to_end(&mut contents).await {
+                    println!("Failed to read job.yml in directory \"{}\": {}", path.display(), e.to_string());
+                    continue;
+                }
+                Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
+            }
+            Err(_) => {
+                println!("Directory \"{}\" has no job.yml file", path.display());
+                continue;
+            }
+        };
+        if let Some(job) = job {
+            if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
+            else { println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" ")); }
+            if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
+            if let Schedule::After(ref path) = job.schedule { println!("Execution after job with path {}", path.display()); }
+            wconfig.jobs.push(job);
         }
     }
 }
