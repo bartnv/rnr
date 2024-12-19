@@ -6,12 +6,12 @@ use crate::{ Config, Job, Schedule, duration_from };
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Receiver<Box<Job>>, mut spawner: mpsc::Sender<Box<Job>>, mut websockets: broadcast::Sender<Job>) {
     while let Some(update) = runner.recv().await {
         let mut job = None;
-        let mut after = vec![];
+        let mut doafter = vec![];
         {
             let mut wconfig = config.write().unwrap();
-            for ajob in wconfig.jobs.iter_mut() {
-                if let Schedule::After(path) = &ajob.schedule {
-                    if *path == update.path { after.push(Box::new(ajob.clone_empty())); }
+            for ajob in wconfig.jobs.values_mut() {
+                if let Schedule::After(after) = &ajob.schedule {
+                    if after.contains(&update.path.display().to_string()) { doafter.push(Box::new(ajob.clone_empty())); }
                 }
                 if ajob.path == update.path { job = Some(ajob); }
             };
@@ -36,7 +36,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                 eprintln!("Broadcast error: {}", e);
             }
         }
-        for mut job in after {
+        for mut job in doafter {
             job.laststart = Some(chrono::Local::now());
             spawner.send(job).await.unwrap();
         }

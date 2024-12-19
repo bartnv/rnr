@@ -34,7 +34,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
         let mut nextloop = chrono::Local::now() + chrono::TimeDelta::new(300, 0).unwrap();
         {
             let rconfig = config.read().unwrap();
-            for job in &rconfig.jobs {
+            for job in rconfig.jobs.values() {
                 if let Schedule::Schedule(sched) = &job.schedule {
                     let nextrun = sched.upcoming(chrono::Local).next().unwrap();
                     if nextrun > nextloop { continue; }

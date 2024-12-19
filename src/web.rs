@@ -69,7 +69,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
     let mut res = JsonMsg { msg: "init", ..Default::default() };
     {
         let rconfig = config.read().unwrap();
-        for job in &rconfig.jobs {
+        for job in rconfig.jobs.values() {
             res.jobs.push(job.to_json());
         }
     }
@@ -96,16 +96,13 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                                                         let mut res = None;
                                                         {
                                                             let rconfig = config.read().unwrap();
-                                                            for job in &rconfig.jobs {
-                                                                if job.path.to_string_lossy() == req.path {
-                                                                    if let Some(lastrun) = &job.lastrun {
-                                                                        res = Some(JsonDetails {
-                                                                            path: req.path,
-                                                                            log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
-                                                                            err: String::from_utf8_lossy(&lastrun.output.stderr).into_owned()
-                                                                        });
-                                                                    }
-                                                                    break;
+                                                            if let Some(job) = rconfig.jobs.get(&req.path) {
+                                                                if let Some(lastrun) = &job.lastrun {
+                                                                    res = Some(JsonDetails {
+                                                                        path: req.path,
+                                                                        log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
+                                                                        err: String::from_utf8_lossy(&lastrun.output.stderr).into_owned()
+                                                                    });
                                                                 }
                                                             }
                                                         }

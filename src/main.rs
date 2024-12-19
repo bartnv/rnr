@@ -12,7 +12,7 @@ mod web;
 const VERSION: &str = git_version!();
 
 struct Config {
-    jobs: Vec<Job>,
+    jobs: HashMap<String, Job>,
     env: HashMap<String, String>
 }
 
@@ -21,7 +21,7 @@ enum Schedule {
     #[default]
     None,
     Continuous,
-    After(path::PathBuf),
+    After(Vec<String>),
     Schedule(cron::Schedule)
 }
 
@@ -80,9 +80,15 @@ impl Job {
             Some(sched) => {
                 let mut tokens = sched.split_ascii_whitespace();
                 match tokens.next().unwrap() {
-                    "@continuous" => Schedule::Continuous,
-                    "@after" => match tokens.next() {
-                        Some(path) => Schedule::After(path::PathBuf::from(path)),
+                    "continuous" => Schedule::Continuous,
+                    "after" => match tokens.next() {
+                        Some(path) => {
+                            let mut vec = Vec::from([ path.to_string() ]);
+                            while let Some(path) = tokens.next() {
+                                vec.push(path.to_string());
+                            }
+                            Schedule::After(vec)
+                        },
                         None => { return Some(Job::from_error(Some(name), path, format!("Invalid schedule expression: {}", sched))); }
                     },
                     _ => match cron::Schedule::from_str(sched) {
@@ -123,7 +129,7 @@ impl Job {
                 _ => None
             },
             after: match &self.schedule {
-                Schedule::After(after) => Some(after.display().to_string()),
+                Schedule::After(after) => Some(after.join(" ")),
                 _ => None
             },
             error: self.error.clone(),
@@ -155,13 +161,14 @@ async fn main() -> process::ExitCode {
         Err(e) => { eprintln!("Failed to find current working directory"); return process::ExitCode::FAILURE; }
     };
     println!("Starting rnr {} in {}", VERSION, cwd.display());
-    let config = Arc::new(RwLock::new(Config { jobs: vec![], env: HashMap::new() }));
+    let config = Arc::new(RwLock::new(Config { jobs: HashMap::new(), env: HashMap::new() }));
     process_config(&config).await;
     let mut dir = match fs::read_dir(".").await {
         Ok(dir) => dir,
         Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
     };
     read_jobs(&config, dir).await;
+    check_jobs(&config);
     let (bctx, bcrx) = broadcast::channel(100);
     let aconfig = config.clone();
     let broadcast = bctx.clone();
@@ -233,8 +240,21 @@ async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir
             if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
             else { println!("Found job \"{}\" at path {} to run: {}", job.name, job.path.display(), job.command.join(" ")); }
             if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
-            if let Schedule::After(ref path) = job.schedule { println!("Execution after job with path {}", path.display()); }
-            wconfig.jobs.push(job);
+            if let Schedule::After(ref after) = job.schedule { println!("Execution after job(s): {}", after.join(" ")); }
+            wconfig.jobs.insert(job.path.display().to_string(), job);
+        }
+    }
+}
+
+fn check_jobs(mut config: &Arc<RwLock<Config>>) {
+    let rconfig = config.read().unwrap();
+    for job in rconfig.jobs.values() {
+        if let Schedule::After(after) = &job.schedule {
+            for path in after {
+                if !rconfig.jobs.contains_key(path) {
+                    eprintln!("Job \"{}\" scheduled after job {} which doesn't exist", job.name, path);
+                }
+            }
         }
     }
 }
