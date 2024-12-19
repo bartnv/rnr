@@ -5,6 +5,12 @@ use crate::{ Config, Job, Schedule, duration_from };
 
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Receiver<Box<Job>>, mut spawner: mpsc::Sender<Box<Job>>, mut websockets: broadcast::Sender<Job>) {
     while let Some(update) = runner.recv().await {
+        if update.running {
+            if let Err(e) = websockets.send(*update) {
+                eprintln!("Broadcast error: {}", e);
+            }
+            continue;
+        }
         let mut job = None;
         let mut doafter = vec![];
         {
@@ -19,6 +25,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                 Some(job) => job,
                 None => { eprintln!("Job with path {} not found", update.path.display()); continue; }
             };
+            job.running = false;
 
             if let Some(e) = update.error {
                 eprintln!("Job \"{}\" permanent error: {}", update.name, e);

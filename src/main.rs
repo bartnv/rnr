@@ -40,6 +40,7 @@ struct JsonJob {
     after: Option<String>,
     command: String,
     error: Option<String>,
+    running: bool,
     laststatus: Option<i32>,
     lastrun: Option<chrono::DateTime<chrono::Local>>,
     lastdur: u64,
@@ -54,6 +55,7 @@ struct Job {
     schedule: Schedule,
     command: Vec<String>,
     error: Option<String>,
+    running: bool,
     laststart: Option<chrono::DateTime<chrono::Local>>,
     lastrun: Option<Run>
 }
@@ -62,9 +64,10 @@ impl Job {
         Job {
             name: self.name.clone(),
             path: self.path.clone(),
-            schedule: Schedule::None,
+            schedule: self.schedule.clone(),
             command: self.command.clone(),
             error: None,
+            running: self.running,
             laststart: None,
             lastrun: None
         }
@@ -133,6 +136,7 @@ impl Job {
                 _ => None
             },
             error: self.error.clone(),
+            running: self.running,
             laststatus: match &self.lastrun {
                 Some(run) => Some(run.output.status.code().unwrap()),
                 None => None
@@ -247,12 +251,14 @@ async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir
 }
 
 fn check_jobs(mut config: &Arc<RwLock<Config>>) {
-    let rconfig = config.read().unwrap();
-    for job in rconfig.jobs.values() {
+    let mut wconfig = config.write().unwrap();
+    let paths: Vec<String> = wconfig.jobs.keys().map(|v| v.clone()).collect();
+    for job in wconfig.jobs.values_mut() {
         if let Schedule::After(after) = &job.schedule {
             for path in after {
-                if !rconfig.jobs.contains_key(path) {
+                if !paths.contains(path) {
                     eprintln!("Job \"{}\" scheduled after job {} which doesn't exist", job.name, path);
+                    job.error = Some(format!("Scheduled after nonexistent job {}", path));
                 }
             }
         }
