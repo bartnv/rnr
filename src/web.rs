@@ -133,6 +133,9 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                     Ok(job) => {
                         let mut res = JsonMsg { msg: "update", jobs: vec![], ..Default::default() };
                         res.jobs.push(job.to_json());
+                        while let Ok(job) = broadcast.try_recv() { // Check if additional results are waiting
+                            res.jobs.push(job.to_json());
+                        }
                         ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
                     },
                     Err(e) => eprintln!("Broadcast channel error: {}", e)
