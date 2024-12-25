@@ -19,18 +19,20 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
             let config = aconfig.clone();
             tokio::spawn(async move {
                 let name = job.name.clone();
-                if let Some(job) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
-                    if job.running {
-                        eprintln!("Skipping run of job \"{}\" because it is already running", job.name);
+                if let Some(cjob) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
+                    if cjob.running {
+                        eprintln!("Skipping run of job \"{}\" because it is already running", cjob.name);
                         return;
                     }
-                    job.running = true;
+                    cjob.running = true;
+                    cjob.laststart = job.laststart.clone();
                 }
                 job.running = true;
                 if let Err(e) = ctrltx.send(job.clone()).await {
                     eprintln!("Send error: {}", e);
                 }
-                let job = run_job(config, job).await;
+                let mut job = run_job(config, job).await;
+                job.running = false;
                 if let Err(e) = ctrltx.send(job).await {
                     eprintln!("Send error: {}", e);
                 }
@@ -79,7 +81,6 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         Ok(output) => output,
         Err(e) => { job.error = Some(format!("Failed to start: {}", e)); return job; }
     };
-    job.running = false;
     job.lastrun = Some(Run { start: job.laststart.as_ref().unwrap().clone(), duration: start.elapsed(), output });
     let output = &job.lastrun.as_ref().unwrap().output;
     let mut filename = job.path.clone();
