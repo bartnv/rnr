@@ -21,7 +21,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
                 let name = job.name.clone();
                 if let Some(cjob) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
                     if cjob.running {
-                        eprintln!("Skipping run of job \"{}\" because it is already running", cjob.name);
+                        eprintln!("Skipping run of job {} because it is already running", cjob.path.display());
                         return;
                     }
                     cjob.running = true;
@@ -64,7 +64,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
             }
         }
         let wait = nextloop - chrono::Local::now();
-        println!("Next loop in {} ({} jobs to run)", duration_from(wait.num_seconds().try_into().unwrap()), nextjobs.len());
+        // println!("Next loop in {} ({} jobs to run)", duration_from(wait.num_seconds().try_into().unwrap()), nextjobs.len());
         tokio::time::sleep(wait.to_std().unwrap()).await;
     }
 }

@@ -10,16 +10,16 @@ use crate::{ Config, Job, JsonJob, Schedule };
 pub async fn run(config: Arc<RwLock<Config>>, listener: TcpListener, broadcast: broadcast::Sender<Job>) {
     let http = hyper::server::conn::http1::Builder::new();
     let service = hyper::service::service_fn(move |req| {
-        println!("Received HTTP request {} {}", req.method(), req.uri());
+        // println!("Received HTTP request {} {}", req.method(), req.uri());
         handle_http(req, config.clone(), broadcast.subscribe())
     });
     while let Ok((stream, addr)) = listener.accept().await {
-        println!("Incoming HTTP connection from {}", addr);
+        // println!("Incoming HTTP connection from {}", addr);
         let http = http.clone();
         let service = service.clone();
         tokio::spawn(async move {
             if let Err(e) = http.serve_connection(TokioIo::new(stream), service.clone()).with_upgrades().await {
-                println!("HTTP error: {}", e);
+                // println!("HTTP error: {}", e);
             }
         });
     }
