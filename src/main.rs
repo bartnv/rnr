@@ -14,6 +14,7 @@ mod web;
 const VERSION: &str = git_version!();
 
 struct Config {
+    dir: PathBuf,
     jobs: HashMap<String, Job>,
     env: HashMap<String, String>
 }
@@ -53,9 +54,10 @@ struct JsonJob {
 #[derive(Clone, Debug, Default)]
 struct Job {
     name: String,
-    path: path::PathBuf,
-    schedule: Schedule,
+    path: PathBuf,
     command: Vec<String>,
+    workdir: Option<PathBuf>,
+    schedule: Schedule,
     error: Option<String>,
     running: bool,
     laststart: Option<chrono::DateTime<chrono::Local>>,
@@ -67,8 +69,9 @@ impl Job {
         Job {
             name: self.name.clone(),
             path: self.path.clone(),
-            schedule: self.schedule.clone(),
             command: self.command.clone(),
+            workdir: self.workdir.clone(),
+            schedule: self.schedule.clone(),
             error: None,
             running: self.running,
             laststart: None,
@@ -76,7 +79,7 @@ impl Job {
             update: false.into()
         }
     }
-    fn from_yaml(path: path::PathBuf, yaml: String) -> Job {
+    fn from_yaml(path: PathBuf, yaml: String) -> Job {
         let docs = match YamlLoader::load_from_str(&yaml) {
             Ok(config) => config,
             Err(err) => { return Job::from_error(None, path, format!("Invalid YAML in jobfile: {}", err)); }
@@ -114,15 +117,20 @@ impl Job {
             Ok(args) => args,
             Err(e) => { return Job::from_error(Some(name), path, format!("Invalid command found in jobfile: {}", e)); }
         };
+        let workdir = match config["workdir"].as_str() {
+            Some(str) => Some(PathBuf::from(str)),
+            None => None
+        };
         Job {
             name,
             path,
-            schedule,
             command,
+            workdir,
+            schedule,
             ..Default::default()
         }
     }
-    fn from_error(name: Option<String>, path: path::PathBuf, error: String) -> Job {
+    fn from_error(name: Option<String>, path: PathBuf, error: String) -> Job {
         let name = name.unwrap_or(path.display().to_string().trim_start_matches("./").to_string());
         Job { name, path, error: Some(error), ..Default::default() }
     }
@@ -164,19 +172,38 @@ impl Job {
 
 #[tokio::main]
 async fn main() -> process::ExitCode {
-    let cwd = match env::current_dir() {
+    let rnrdir = match env::current_dir() {
         Ok(dir) => dir,
-        Err(e) => { eprintln!("Failed to find current working directory"); return process::ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("Failed to find current working directory");
+            return process::ExitCode::FAILURE;
+        }
     };
-    println!("Starting rnr {} in {}", VERSION, cwd.display());
-    let config = Arc::new(RwLock::new(Config { jobs: HashMap::new(), env: HashMap::new() }));
+    println!("Starting rnr {} in {}", VERSION, rnrdir.display());
+    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new() }));
     process_config(&config).await;
-    let mut dir = match fs::read_dir(".").await {
+    let mut dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
-        Err(e) => { eprintln!("Failed to read current working directory: {}", e.to_string()); return process::ExitCode::FAILURE; }
+        Err(e) => {
+            eprintln!("Failed to read runner directory {}: {}", rnrdir.display(), e.to_string());
+            return process::ExitCode::FAILURE;
+        }
     };
     read_jobs(&config, dir).await;
     check_jobs(&config);
+    match env::home_dir() {
+        Some(dir) => {
+            if let Err(e) = env::set_current_dir(dir) {
+                eprintln!("Failed to change to home directory");
+                return process::ExitCode::FAILURE;
+            }
+        },
+        None => {
+            eprintln!("Failed to find home directory");
+            return process::ExitCode::FAILURE;
+        }
+    }
+
     let (bctx, bcrx) = broadcast::channel(100);
     let aconfig = config.clone();
     let broadcast = bctx.clone();
@@ -196,7 +223,7 @@ async fn main() -> process::ExitCode {
     };
 
     let (ntx, mut nrx) = mpsc::channel(10);
-    let watchdir = cwd.clone();
+    let watchdir = rnrdir.clone();
     tokio::task::spawn_blocking(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
@@ -218,14 +245,14 @@ async fn main() -> process::ExitCode {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
             else { continue; }
-            let dirpath = event.paths[0].parent().unwrap().strip_prefix(&cwd).unwrap().to_owned();
+            let dirpath = event.paths[0].parent().unwrap().strip_prefix(&rnrdir).unwrap().to_owned();
             update_job(&config, dirpath, bctx.clone());
         }
         else if let EventKind::Create(CreateKind::Folder) = event.kind {
             if event.paths.len() < 1 { continue; }
             if let Some(parent) = event.paths[0].parent() {
-                if parent == cwd {
-                    let path = event.paths[0].strip_prefix(&cwd).unwrap().to_owned();
+                if parent == rnrdir {
+                    let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
                     println!("Subdirectory {} added", path.display());
                     if path.join("job.yml").is_file() {
                         update_job(&config, path, bctx.clone());
@@ -239,7 +266,7 @@ async fn main() -> process::ExitCode {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
             else { continue; }
-            let dirname = event.paths[0].parent().unwrap().strip_prefix(&cwd).unwrap().display().to_string();
+            let dirname = event.paths[0].parent().unwrap().strip_prefix(&rnrdir).unwrap().display().to_string();
             println!("Jobfile with path {} removed", dirname);
             if let Ok(mut config) = config.write() {
                 if config.jobs.remove(&dirname).is_some() {
@@ -283,9 +310,9 @@ async fn process_config(mut config: &Arc<RwLock<Config>>) {
 async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
     let mut wconfig = config.write().unwrap();
     while let Ok(Some(entry)) = dir.next_entry().await {
-        let path = path::PathBuf::from(entry.file_name()); // Get the relative path
+        let path = PathBuf::from(entry.file_name()); // Get the relative path
         if !path.is_dir() { continue; }
-        let job = match fs::File::open(&path.join("job.yml")).await {
+        let mut job = match fs::File::open(&path.join("job.yml")).await {
             Ok(mut file) => {
                 let mut contents = vec![];
                 if let Err(e) = file.read_to_end(&mut contents).await {
@@ -303,6 +330,7 @@ async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir
         else { println!("Found job {} ({}) to run: {}", job.path.display(), job.name, job.command.join(" ")); }
         if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().unwrap()); }
         if let Schedule::After(ref after) = job.schedule { println!("Execution after job(s): {}", after.join(" ")); }
+        if wconfig.dir.join(&job.path).join("runs").is_dir() { job.history = true; }
         wconfig.jobs.insert(job.path.display().to_string(), job);
     }
 }
@@ -322,9 +350,11 @@ fn check_jobs(mut config: &Arc<RwLock<Config>>) {
     }
 }
 
-fn update_job(mut config: &Arc<RwLock<Config>>, dirpath: PathBuf, bctx: broadcast::Sender<Job>) {
-    let dirname = dirpath.display().to_string();
+fn update_job(mut config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::Sender<Job>) {
+    let dirname = path.display().to_string();
     println!("Jobfile with path {} written", dirname);
+    let mut dir = config.read().unwrap().dir.clone();
+    dir.push(&path);
     if let Ok(mut config) = config.write() {
         let job = config.jobs.get_mut(&dirname);
         match job {
@@ -342,14 +372,14 @@ fn update_job(mut config: &Arc<RwLock<Config>>, dirpath: PathBuf, bctx: broadcas
     let broadcast = bctx.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::new(1, 0)).await;
-        let mut newjob = match fs::File::open(dirpath.join("job.yml")).await {
+        let mut newjob = match fs::File::open(dir.join("job.yml")).await {
             Ok(mut file) => {
                 let mut contents = vec![];
                 if let Err(e) = file.read_to_end(&mut contents).await {
                     println!("Failed to read job.yml in directory \"{}\": {}", dirname, e.to_string());
                     return;
                 }
-                Job::from_yaml(dirpath.clone(), String::from_utf8_lossy(&contents).into_owned())
+                Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
             }
             Err(_) => {
                 println!("Unable to open job.yml file in {}", dirname);

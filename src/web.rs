@@ -73,7 +73,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
             res.jobs.push(job.to_json());
         }
     }
-    ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
+    ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?.into())).await?;
 
     loop {
         tokio::select!{
@@ -87,7 +87,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                                         match text.as_str() {
                                             "ping" => {
                                                 let res = JsonMsg { msg: "pong", ..Default::default() };
-                                                ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
+                                                ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?.into())).await?;
                                             },
                                             text => {
                                                 let req: JsonReq = serde_json::from_str(text)?;
@@ -108,7 +108,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                                                         }
                                                         if let Some(details) = res {
                                                             let res = JsonMsg { msg: "details", jobs: vec![], details: Some(details) };
-                                                            ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?
+                                                            ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?.into())).await?
                                                         }
                                                     },
                                                     _ => {
@@ -119,6 +119,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                                             }
                                         }
                                     },
+                                    hyper_tungstenite::tungstenite::Message::Close(_) => {},
                                     other => println!("Received unexpected websocket message: {:?}", other)
                                 }
                             },
@@ -136,7 +137,7 @@ pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc
                         while let Ok(job) = broadcast.try_recv() { // Check if additional results are waiting
                             res.jobs.push(job.to_json());
                         }
-                        ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?)).await?;
+                        ws_tx.send(hyper_tungstenite::tungstenite::Message::Text(serde_json::to_string(&res)?.into())).await?;
                     },
                     Err(e) => eprintln!("Broadcast channel error: {}", e)
                 }

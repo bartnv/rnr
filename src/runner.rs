@@ -70,11 +70,24 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
 }
 
 async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> Box<Job> {
-    println!("{} Running {}", chrono::Local::now(), job.name);
-    let mut cmd = tokio::process::Command::new(&job.command[0]);
+    let executable = match job.command[0].contains("/") {
+        true => match tokio::fs::canonicalize(&job.command[0]).await {
+            Ok(path) => path,
+            Err(e) => {
+                job.error = Some(format!("Failed to locate executable {}: {}", &job.command[0], e));
+                return job;
+            }
+        },
+        false => std::path::PathBuf::from(&job.command[0])
+    };
+    println!("{} [{}] starting {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), executable.display());
+    let mut cmd = tokio::process::Command::new(executable);
     cmd.args(&job.command[1..]);
     if let Ok(config) = config.read() {
         cmd.envs(&config.env);
+    }
+    if let Some(ref dir) = job.workdir {
+        cmd.current_dir(dir);
     }
     let start = time::Instant::now();
     let output = match cmd.output().await {
@@ -83,7 +96,8 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     };
     job.lastrun = Some(Run { start: job.laststart.as_ref().unwrap().clone(), duration: start.elapsed(), output });
     let output = &job.lastrun.as_ref().unwrap().output;
-    let mut filename = job.path.clone();
+    let mut filename = config.read().unwrap().dir.clone();
+    filename.push(job.path.clone());
     filename.push("runs");
     filename.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
     if tokio::fs::create_dir(&filename).await.is_err() { return job; }
