@@ -33,8 +33,8 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             }
             if let Some(run) = update.lastrun {
                 match run.output.status.success() {
-                    true => println!("{} Job {} ran successfully in {}", chrono::Local::now(), update.path.display(), duration_from(run.duration.as_secs())),
-                    false => println!("{} Job {} failed after {} with error code {}", chrono::Local::now(), update.path.display(), duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
+                    true => println!("{} [{}] ran successfully in {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs())),
+                    false => println!("{} [{}] failed after {} with error code {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
                 };
                 job.laststart = update.laststart.clone();
                 job.lastrun = Some(run);

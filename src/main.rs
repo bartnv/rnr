@@ -243,7 +243,7 @@ async fn main() -> process::ExitCode {
             println!("Jobfile with path {} removed", dirname);
             if let Ok(mut config) = config.write() {
                 if config.jobs.remove(&dirname).is_some() {
-                    println!("{} Job {} deleted", chrono::Local::now(), dirname);
+                    println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
                 }
             }
         }
@@ -363,9 +363,9 @@ fn update_job(mut config: &Arc<RwLock<Config>>, dirpath: PathBuf, bctx: broadcas
             newjob.running = oldjob.running;
             newjob.laststart = oldjob.laststart;
             newjob.lastrun = oldjob.lastrun;
-            println!("{} Job {} reloaded", chrono::Local::now(), dirname);
+            println!("{} [{}] reloaded", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
         }
-        else { println!("{} Job {} added", chrono::Local::now(), dirname); }
+        else { println!("{} [{}] added", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname); }
         let _ = broadcast.send(newjob.clone());
         wconfig.jobs.insert(dirname, newjob);
     });
