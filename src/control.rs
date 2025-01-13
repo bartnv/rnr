@@ -26,6 +26,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                 None => { eprintln!("Job with path {} not found", update.path.display()); continue; }
             };
             job.running = false;
+            job.history = update.history;
 
             if let Some(e) = update.error {
                 eprintln!("Job \"{}\" permanent error: {}", update.name, e);

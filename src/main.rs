@@ -48,7 +48,8 @@ struct JsonJob {
     lastrun: Option<chrono::DateTime<chrono::Local>>,
     lastdur: u64,
     lastlog: usize,
-    lasterr: usize
+    lasterr: usize,
+    history: bool
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +63,7 @@ struct Job {
     running: bool,
     laststart: Option<chrono::DateTime<chrono::Local>>,
     lastrun: Option<Run>,
+    history: bool,
     update: bool
 }
 impl Job {
@@ -76,7 +78,8 @@ impl Job {
             running: self.running,
             laststart: None,
             lastrun: None,
-            update: false.into()
+            history: self.history,
+            update: false
         }
     }
     fn from_yaml(path: PathBuf, yaml: String) -> Job {
@@ -165,7 +168,8 @@ impl Job {
             lasterr: match &self.lastrun {
                 Some(run) => run.output.stderr.lines().count(),
                 None => 0
-            }
+            },
+            history: self.history
         }
     }
 }

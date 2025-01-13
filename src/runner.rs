@@ -101,6 +101,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     filename.push("runs");
     filename.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
     if tokio::fs::create_dir(&filename).await.is_err() { return job; }
+    job.history = true;
     filename.push("status");
     match tokio::fs::File::create(&filename).await {
         Ok(mut file) => file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
