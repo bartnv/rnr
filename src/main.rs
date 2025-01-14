@@ -393,7 +393,6 @@ fn update_job(mut config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::
         let mut wconfig = config.write().unwrap();
         let oldjob = wconfig.jobs.remove(&dirname).unwrap();
         if !oldjob.name.is_empty() { // New jobs have empty name
-            if !newjob.error.is_some() { newjob.error = oldjob.error; }
             newjob.running = oldjob.running;
             newjob.laststart = oldjob.laststart;
             newjob.lastrun = oldjob.lastrun;
