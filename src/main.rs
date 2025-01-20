@@ -195,6 +195,7 @@ async fn main() -> process::ExitCode {
     };
     read_jobs(&config, dir).await;
     check_jobs(&config);
+    #[allow(deprecated)]
     match env::home_dir() {
         Some(dir) => {
             if let Err(e) = env::set_current_dir(dir) {
