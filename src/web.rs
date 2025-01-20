@@ -35,14 +35,18 @@ pub async fn handle_http(mut request: hyper::Request<body::Incoming>, config: Ar
     } else {
         match request.uri().path() {
             "/" => {
-                Ok(hyper::Response::new(http_body_util::Full::<body::Bytes>::from(fs::read("web/index.html")?)))
+                Ok(hyper::Response::new(http_body_util::Full::<body::Bytes>::from(fs::read("rnr/web/index.html")?)))
             },
             file if [ "/favicon.ico" ].contains(&file) => {
                 Ok(hyper::Response::new(http_body_util::Full::<body::Bytes>::from(fs::read(String::from("web") + file)?)))
             },
-            _ => Ok(hyper::Response::builder().status(hyper::StatusCode::NOT_FOUND).body(http_body_util::Full::<body::Bytes>::from(""))?)
+            _ => http_error(hyper::StatusCode::NOT_FOUND, "")
         }
     }
+}
+
+fn http_error(code: hyper::StatusCode, message: &'static str) -> Result<hyper::Response<http_body_util::Full<body::Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    Ok(hyper::Response::builder().status(code).body(http_body_util::Full::<body::Bytes>::from(message))?)
 }
 
 pub async fn handle_websocket(ws: hyper_tungstenite::HyperWebsocket, config: Arc<RwLock<Config>>, mut broadcast: broadcast::Receiver<Job>) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
