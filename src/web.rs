@@ -27,6 +27,18 @@ pub async fn run(config: Arc<RwLock<Config>>, listener: TcpListener, broadcast: 
 
 pub async fn handle_http(mut request: hyper::Request<body::Incoming>, config: Arc<RwLock<Config>>, broadcast: broadcast::Receiver<Job>) -> Result<hyper::Response<http_body_util::Full<body::Bytes>>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     if hyper_tungstenite::is_upgrade_request(&request) {
+        match request.headers().get("Sec-WebSocket-Protocol") {
+            Some(auth) => match auth.to_str() {
+                Ok(auth) => match auth.split(", ").nth(1) {
+                    Some(pass) => if pass != "test123" {
+                        return http_error(hyper::StatusCode::FORBIDDEN, "Password invalid")
+                    },
+                    None => return http_error(hyper::StatusCode::FORBIDDEN, "Sec-WebSocket-Protocol header is invalid")
+                },
+                Err(_) => return http_error(hyper::StatusCode::FORBIDDEN, "Sec-WebSocket-Protocol header is invalid")
+            },
+            None => return http_error(hyper::StatusCode::FORBIDDEN, "No Sec-WebSocket-Protocol header found")
+        }
         let (response, websocket) = hyper_tungstenite::upgrade(&mut request, None)?;
         tokio::spawn(async move {
             let _ = handle_websocket(websocket, config, broadcast).await;
