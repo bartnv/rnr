@@ -1,10 +1,9 @@
-use crate::{ Config, Job, JsonJob, Schedule };
+use crate::{ Config, Job, JsonJob };
 use std::{ convert::Infallible, sync::{ Arc, RwLock } };
-use axum::{ extract::{ Path, State }, http::StatusCode, response::{ sse::{ Event, KeepAlive, Sse }, IntoResponse}, routing::{ get, post }, Json, Router };
+use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
-use futures_util::FutureExt;
 use serde::Serialize;
-use tokio::{ net::TcpListener, sync::broadcast };
+use tokio::sync::broadcast;
 use async_stream::try_stream;
 use tower_http::services::ServeFile;
 
@@ -51,7 +50,7 @@ async fn updates(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job
                     let data = serde_json::to_string(&job.to_json()).unwrap();
                     yield Event::default().data(data);
                 },
-                Err(e) => break
+                Err(_) => break
             }
         }
     }).keep_alive(KeepAlive::default())
