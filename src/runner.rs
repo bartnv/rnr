@@ -24,7 +24,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
                         return;
                     }
                     cjob.running = true;
-                    cjob.laststart = job.laststart.clone();
+                    cjob.laststart = job.laststart;
                 }
                 job.running = true;
                 if let Err(e) = ctrltx.send(job.clone()).await {
@@ -57,7 +57,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
                     if nextrun > nextloop { continue; }
                     if nextrun < nextloop {
                         nextjobs.clear();
-                        nextloop = nextrun.clone();
+                        nextloop = nextrun;
                     }
                     let mut job = Box::new(job.clone_empty());
                     job.laststart = Some(nextrun);
@@ -96,7 +96,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         Ok(output) => output,
         Err(e) => { job.error = Some(format!("Failed to start: {}", e)); return job; }
     };
-    job.lastrun = Some(Run { start: job.laststart.as_ref().unwrap().clone(), duration: start.elapsed(), output });
+    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: start.elapsed(), output });
     let output = &job.lastrun.as_ref().unwrap().output;
     let mut filename = config.read().unwrap().dir.clone();
     filename.push(job.path.clone());
@@ -109,14 +109,14 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         Ok(mut file) => file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
         Err(e) => { job.error = Some(format!("Failed to write status file: {}", e)); return job; }
     };
-    if output.stdout.len() > 0 {
+    if !output.stdout.is_empty() {
         filename.pop();
         filename.push("out");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
             file.write_all(&output.stdout).await.unwrap();
         };
     }
-    if output.stderr.len() > 0 {
+    if !output.stderr.is_empty() {
         filename.pop();
         filename.push("err");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {

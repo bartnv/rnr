@@ -37,7 +37,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                     true => println!("{} [{}] ran successfully in {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs())),
                     false => println!("{} [{}] failed after {} with error code {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
                 };
-                job.laststart = update.laststart.clone();
+                job.laststart = update.laststart;
                 job.lastrun = Some(run);
             }
             if let Err(e) = websockets.send(job.clone()) {

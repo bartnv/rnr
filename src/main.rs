@@ -1,4 +1,4 @@
-// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
 use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, os::unix::ffi::OsStrExt, path::PathBuf, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
 use git_version::git_version;
 use notify::{ event::{ AccessKind, AccessMode, CreateKind, RemoveKind }, EventKind, Watcher };
@@ -96,7 +96,7 @@ impl Job {
                     "after" => match tokens.next() {
                         Some(path) => {
                             let mut vec = Vec::from([ path.to_string() ]);
-                            while let Some(path) = tokens.next() {
+                            for path in tokens {
                                 vec.push(path.to_string());
                             }
                             Schedule::After(vec)
@@ -113,16 +113,13 @@ impl Job {
         };
         let command = match config["command"].as_str() {
             Some(str) => str,
-            None => { return Job::from_error(Some(name), path, format!("No command found in jobfile")); }
+            None => { return Job::from_error(Some(name), path, "No command found in jobfile".to_string()); }
         };
         let command = match shell_words::split(command) {
             Ok(args) => args,
             Err(e) => { return Job::from_error(Some(name), path, format!("Invalid command found in jobfile: {}", e)); }
         };
-        let workdir = match config["workdir"].as_str() {
-            Some(str) => Some(PathBuf::from(str)),
-            None => None
-        };
+        let workdir = config["workdir"].as_str().map(PathBuf::from);
         Job {
             name,
             path,
@@ -151,11 +148,8 @@ impl Job {
             },
             error: self.error.clone(),
             running: self.running,
-            laststatus: match &self.lastrun {
-                Some(run) => Some(run.output.status.code().unwrap()),
-                None => None
-            },
-            lastrun: self.laststart.clone(),
+            laststatus: self.lastrun.as_ref().map(|run| run.output.status.code().unwrap()),
+            lastrun: self.laststart,
             lastdur: match &self.lastrun {
                 Some(run) => run.duration.as_secs(),
                 None => 0
@@ -188,7 +182,7 @@ async fn main() -> process::ExitCode {
     let dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("Failed to read runner directory {}: {}", rnrdir.display(), e.to_string());
+            eprintln!("Failed to read runner directory {}: {}", rnrdir.display(), e);
             return process::ExitCode::FAILURE;
         }
     };
@@ -244,7 +238,7 @@ async fn main() -> process::ExitCode {
     });
     while let Some(event) = nrx.recv().await {
         if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind {
-            if event.paths.len() < 1 { continue; }
+            if event.paths.is_empty() { continue; }
             if let Some(filename) = event.paths[0].file_name() {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
@@ -253,7 +247,7 @@ async fn main() -> process::ExitCode {
             update_job(&config, dirpath, bctx.clone());
         }
         else if let EventKind::Create(CreateKind::Folder) = event.kind {
-            if event.paths.len() < 1 { continue; }
+            if event.paths.is_empty() { continue; }
             if let Some(parent) = event.paths[0].parent() {
                 if parent == rnrdir {
                     let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
@@ -265,7 +259,7 @@ async fn main() -> process::ExitCode {
             }
         }
         else if let EventKind::Remove(RemoveKind::File) = event.kind {
-            if event.paths.len() < 1 { continue; }
+            if event.paths.is_empty() { continue; }
             if let Some(filename) = event.paths[0].file_name() {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
@@ -320,7 +314,7 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
             Ok(mut file) => {
                 let mut contents = vec![];
                 if let Err(e) = file.read_to_end(&mut contents).await {
-                    println!("Failed to read job.yml in directory \"{}\": {}", path.display(), e.to_string());
+                    println!("Failed to read job.yml in directory \"{}\": {}", path.display(), e);
                     continue;
                 }
                 Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
@@ -341,7 +335,7 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
 
 fn check_jobs(config: &Arc<RwLock<Config>>) {
     let mut wconfig = config.write().unwrap();
-    let paths: Vec<String> = wconfig.jobs.keys().map(|v| v.clone()).collect();
+    let paths: Vec<String> = wconfig.jobs.keys().cloned().collect();
     for job in wconfig.jobs.values_mut() {
         if let Schedule::After(after) = &job.schedule {
             for path in after {
@@ -380,7 +374,7 @@ fn update_job(config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::Send
             Ok(mut file) => {
                 let mut contents = vec![];
                 if let Err(e) = file.read_to_end(&mut contents).await {
-                    println!("Failed to read job.yml in directory \"{}\": {}", dirname, e.to_string());
+                    println!("Failed to read job.yml in directory \"{}\": {}", dirname, e);
                     return;
                 }
                 Job::from_yaml(path.clone(), String::from_utf8_lossy(&contents).into_owned())
