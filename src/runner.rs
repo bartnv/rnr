@@ -1,7 +1,7 @@
-use std::{ path, process, sync, time };
+use std::{ sync, time };
 use tokio::{ io::AsyncWriteExt as _, sync::{ broadcast, mpsc } };
 
-use crate::{ control, Config, Job, Run, Schedule, duration_from };
+use crate::{ control, Config, Job, Run, Schedule };
 
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
     let mut nextjobs: Vec<Box<Job>> = vec![];
@@ -9,16 +9,15 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
     let (spawntx, mut spawnrx) = mpsc::channel(100);
     let aconfig = config.clone();
     let aspawntx = spawntx.clone();
-    let ctrl = tokio::spawn(async move {
+    tokio::spawn(async move {
         control::run(aconfig.clone(), ctrlrx, aspawntx, broadcast).await;
     });
     let aconfig = config.clone();
-    let spawn = tokio::spawn(async move {
+    tokio::spawn(async move {
         while let Some(mut job) = spawnrx.recv().await {
             let ctrltx = ctrltx.clone();
             let config = aconfig.clone();
             tokio::spawn(async move {
-                let name = job.name.clone();
                 if let Some(cjob) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
                     if cjob.running {
                         eprintln!("Skipping run of job {} because it is already running", cjob.path.display());

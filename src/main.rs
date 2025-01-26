@@ -1,8 +1,7 @@
-#![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ collections::HashMap, env, error, ffi::OsStr, io::BufRead as _, os::unix::ffi::OsStrExt, path::{self, Path, PathBuf}, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
-use futures_util::StreamExt;
+// #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
+use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, os::unix::ffi::OsStrExt, path::PathBuf, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
 use git_version::git_version;
-use notify::{ event::{ AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind }, EventKind, Watcher };
+use notify::{ event::{ AccessKind, AccessMode, CreateKind, RemoveKind }, EventKind, Watcher };
 use serde::Serialize;
 use tokio::{fs, io::AsyncReadExt as _, net, sync::{ broadcast, mpsc } };
 use yaml_rust2::YamlLoader;
@@ -179,14 +178,14 @@ async fn main() -> process::ExitCode {
     let rnrdir = match env::current_dir() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("Failed to find current working directory");
+            eprintln!("Failed to find current working directory: {}", e);
             return process::ExitCode::FAILURE;
         }
     };
     println!("Starting rnr {} in {}", VERSION, rnrdir.display());
     let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new() }));
     process_config(&config).await;
-    let mut dir = match fs::read_dir(&rnrdir).await {
+    let dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("Failed to read runner directory {}: {}", rnrdir.display(), e.to_string());
@@ -199,7 +198,7 @@ async fn main() -> process::ExitCode {
     match env::home_dir() {
         Some(dir) => {
             if let Err(e) = env::set_current_dir(dir) {
-                eprintln!("Failed to change to home directory");
+                eprintln!("Failed to change to home directory: {}", e);
                 return process::ExitCode::FAILURE;
             }
         },
@@ -209,7 +208,7 @@ async fn main() -> process::ExitCode {
         }
     }
 
-    let (bctx, bcrx) = broadcast::channel(100);
+    let (bctx, _) = broadcast::channel(100);
     let aconfig = config.clone();
     let broadcast = bctx.clone();
     let rnr = tokio::spawn(async move {
@@ -220,7 +219,7 @@ async fn main() -> process::ExitCode {
         Ok(listener) => {
             let aconfig = config.clone();
             let broadcast = bctx.clone();
-            let web = tokio::spawn(async move {
+            tokio::spawn(async move {
                 web::run(aconfig, listener, broadcast).await;
             });
         },
@@ -285,15 +284,15 @@ async fn main() -> process::ExitCode {
     process::ExitCode::SUCCESS
 }
 
-async fn process_config(mut config: &Arc<RwLock<Config>>) {
+async fn process_config(config: &Arc<RwLock<Config>>) {
     let file = fs::File::open("rnr.yml").await;
     if let Err(e) = file {
-        eprintln!("Failed to read rnr.yml configuration file");
+        eprintln!("Failed to read rnr.yml configuration file: {}", e);
         return;
     }
     let mut contents = vec![];
     if let Err(e) = file.unwrap().read_to_end(&mut contents).await {
-        eprintln!("Failed to read rnr.yml configuration file");
+        eprintln!("Failed to read rnr.yml configuration file: {}", e);
         return;
     }
     let docs = match YamlLoader::load_from_str(&String::from_utf8_lossy(&contents)) {
@@ -312,7 +311,7 @@ async fn process_config(mut config: &Arc<RwLock<Config>>) {
     }
 }
 
-async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
+async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
     let mut wconfig = config.write().unwrap();
     while let Ok(Some(entry)) = dir.next_entry().await {
         let path = PathBuf::from(entry.file_name()); // Get the relative path
@@ -340,7 +339,7 @@ async fn read_jobs(mut config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir
     }
 }
 
-fn check_jobs(mut config: &Arc<RwLock<Config>>) {
+fn check_jobs(config: &Arc<RwLock<Config>>) {
     let mut wconfig = config.write().unwrap();
     let paths: Vec<String> = wconfig.jobs.keys().map(|v| v.clone()).collect();
     for job in wconfig.jobs.values_mut() {
@@ -355,7 +354,7 @@ fn check_jobs(mut config: &Arc<RwLock<Config>>) {
     }
 }
 
-fn update_job(mut config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::Sender<Job>) {
+fn update_job(config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::Sender<Job>) {
     let dirname = path.display().to_string();
     println!("Jobfile with path {} written", dirname);
     let mut dir = config.read().unwrap().dir.clone();
