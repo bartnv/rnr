@@ -1,8 +1,12 @@
-use std::{ convert::Infallible, sync::{ Arc, RwLock } };
-use rocket::{ fs::NamedFile, response::stream::{ EventStream, Event }, serde::{ json::Json, Serialize }, State };
-use tokio::{ net::TcpListener, sync::broadcast };
-
 use crate::{ Config, Job, JsonJob, Schedule };
+use std::{ convert::Infallible, sync::{ Arc, RwLock } };
+use axum::{ extract::{ Path, State }, http::StatusCode, response::{ sse::{ Event, KeepAlive, Sse }, IntoResponse}, routing::{ get, post }, Json, Router };
+use futures::Stream;
+use futures_util::FutureExt;
+use serde::Serialize;
+use tokio::{ net::TcpListener, sync::broadcast };
+use async_stream::try_stream;
+use tower_http::services::ServeFile;
 
 #[derive(Default, Serialize)]
 struct JsonDetails {
@@ -10,49 +14,45 @@ struct JsonDetails {
     err: String
 }
 
-pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>) -> Result<rocket::Rocket<rocket::Ignite>, rocket::Error> {
-    let mut rktconfig = rocket::Config::default();
-    rktconfig.address = "0.0.0.0".parse().unwrap();
-    rktconfig.port = 1234;
-    let srv = rocket::custom(rktconfig)
-        .manage(config)
-        .manage(broadcast)
-        .mount("/", routes![index, jobs, job, updates]);
-    srv.launch().await
+pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
+    let app = Router::new()
+        .route_service("/", ServeFile::new("rnr/web/index-axum.html"))
+        .route("/jobs", get(jobs))
+        .route("/jobs/{path}", get(job))
+        .route("/updates", get(updates))
+        .with_state((config, broadcast));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:1234").await.unwrap();
+    axum::serve(listener, app).await.unwrap()
 }
 
-#[get("/")]
-async fn index() -> Option<NamedFile> {
-    NamedFile::open("rnr/web/index-rocket.html").await.ok()
+async fn jobs(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>) -> Json<Vec<JsonJob>> {
+    Json(state.0.read().unwrap().jobs.values().map(|j| j.to_json()).collect())
 }
 
-#[get("/jobs")]
-async fn jobs(config: &State<Arc<RwLock<Config>>>) -> Json<Vec<JsonJob>> {
-    Json(config.read().unwrap().jobs.values().map(|j| j.to_json()).collect())
-}
-
-#[get("/jobs/<path>")]
-async fn job(config: &State<Arc<RwLock<Config>>>, path: &str) -> Option<Json<JsonDetails>> {
-    if let Some(job) = config.read().unwrap().jobs.get(path) {
+async fn job(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>, Path(path): Path<String>) -> Result<Json<JsonDetails>, StatusCode> {
+    if let Some(job) = state.0.read().unwrap().jobs.get(&path) {
         if let Some(lastrun) = &job.lastrun {
-            return Some(Json(JsonDetails {
+            return Ok(Json(JsonDetails {
                 log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
                 err: String::from_utf8_lossy(&lastrun.output.stderr).into_owned()
             }));
         }
     }
-    None
+    Err(StatusCode::NOT_FOUND)
 }
 
-#[get("/updates")]
-async fn updates(broadcast: &State<broadcast::Sender<Job>>) -> EventStream![] {
-    let mut rx = broadcast.subscribe();
-    EventStream! {
+async fn updates(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.1.subscribe();
+    Sse::new(try_stream! {
+        yield Event::default();
         loop {
             match rx.recv().await {
-                Ok(job) => yield Event::json(&job.to_json()),
-                _ => break
+                Ok(job) => {
+                    let data = serde_json::to_string(&job.to_json()).unwrap();
+                    yield Event::default().data(data);
+                },
+                Err(e) => break
             }
         }
-    }
+    }).keep_alive(KeepAlive::default())
 }

@@ -7,8 +7,6 @@ use serde::Serialize;
 use tokio::{fs, io::AsyncReadExt as _, net, sync::{ broadcast, mpsc } };
 use yaml_rust2::YamlLoader;
 
-#[macro_use] extern crate rocket;
-
 mod control;
 mod runner;
 mod web;
@@ -221,9 +219,7 @@ async fn main() -> process::ExitCode {
     let aconfig = config.clone();
     let broadcast = bctx.clone();
     let web = tokio::spawn(async move {
-        if let Err(e) = web::run(aconfig, broadcast).await {
-            eprintln!("Failed to launch webserver: {}", e);
-        }
+        web::run(aconfig, broadcast).await;
     });
 
     let (ntx, mut nrx) = mpsc::channel(10);
