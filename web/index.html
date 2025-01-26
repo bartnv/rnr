@@ -1,0 +1,304 @@
+<!doctype html>
+<html>
+<meta charset="utf-8">
+<head>
+<script src="https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/relativeTime.js"></script>
+<script>
+  'use strict';
+
+  let app = {
+    socket: null,
+    password: null,
+    lastwsmessage: 0,
+    arrange: []
+  };
+  // navigator.serviceWorker.register('sw.js');
+
+  dayjs.extend(dayjs_plugin_relativeTime);
+
+  $().ready(function() {
+    app.password = localStorage.getItem('rnr-password');
+    if (app.password === null) {
+      let dialog = $(`<dialog id="pass"/>`);
+      dialog.append('<h2>Enter password</h2><input type="password"> <input type="button" value="Send">');
+      $('main').append(dialog);
+      dialog[0].showModal();
+      dialog.on('click', 'input[type="button"]', function() {
+        let password = dialog.find('input[type="password"]').val();
+        if ((password === null) || (password === "")) dialog.append('<p>Please enter a password</p>');
+        else {
+          localStorage.setItem('rnr-password', password);
+          app.password = password;
+          dialog.remove();
+        }
+        setupWebsocket();
+      });
+    }
+    else setupWebsocket();
+    setInterval(tick, 30000);
+    $('main').on('click', '.job-log-active', function() {
+      let el = $(this);
+      app.dialog = el.hasClass('job-log')?'log':'err';
+      let path = el.closest('.job').prop('id').substring(4);
+      let dialog = $(`<dialog id="details/${path}"/>`);
+      dialog.append('<h2>' + el.closest('.job').find('.job-name').text() + '</h2><pre></pre>');
+      $('main').append(dialog);
+      dialog[0].showModal();
+      dialog.on('click', function() { this.close(); });
+      dialog.on('close', function() { $(this).remove(); })
+      let req = { req: 'getlog', path: path }
+      app.socket.send(JSON.stringify(req));
+    });
+    $('main').on('click', '.job-history', function() {
+      let path = $(this).closest('.job').prop('id').substring(4);
+      let req = { req: 'gethist', path: path };
+      app.socket.send(JSON.stringify(req));
+    });
+  });
+  function tick() {
+    if (!app.socket || app.socket.readyState != 1) setupWebsocket();
+    else if (Date.now()-app.lastwsmessage > 25000) app.socket.send('ping');
+    $('.job-lastrun').each(function() {
+      let el = $(this);
+      let ts = el.prop('title');
+      if (ts) {
+        el.text('Last start: ' + dayjs(ts).fromNow());
+        return;
+      }
+      ts = el.data('start');
+      if (ts) {
+        let diff = dayjs().diff(dayjs(ts), 'minute');
+        if (diff >= 1) el.parent().find('.job-duration').text('Duration: ' + secsToDur(diff*60));
+      }
+    });
+  }
+  function rearrange() {
+    while (app.arrange.length) {
+      let start = app.arrange.length;
+      let arrange = app.arrange;
+      app.arrange = [];
+      for (let job of arrange) {
+        let name = job.after.split(' ')[0];
+        let before = document.getElementById('job/' + name);
+        if (!before) app.arrange.push(job);
+        else $(before).after(job.div);
+      }
+      if (app.arrange.length == start) {
+        for (let job of app.arrange) {
+          job.div.find('.job-nextrun').text('Not scheduled');
+          let group = $('<div class="group"/>');
+          group.attr('data-sortkey', '00:00');
+          $('main').append(group.append(job.div));
+        }
+        app.arrange = [];
+        break;
+      }
+    }
+  }
+  function setupWebsocket() {
+    if (app.password === null) return;
+    if (app.socket && ((app.socket.readyState === 0) || (app.socket.readyState === 2))) return;
+    app.socket = new WebSocket(location.protocol.replace('http', 'ws') + '//' + location.host + location.pathname + 'ws', [ 'rnr1', app.password ]);
+    app.socket.onopen = function () {
+      app.lastwsmessage = Date.now();
+      setStatus('Connected', 'white', 'green');
+    };
+    app.socket.onmessage = function(event) {
+      app.lastwsmessage = Date.now();
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch(e) {
+        console.log(`Failed to parse JSON (${e.message}): ${event.data}`);
+      }
+      if (data.msg == 'pong') return;
+      console.log('Received ' + data.msg + ' message', data);
+      let main = $('main');
+      switch (data.msg) {
+        case 'init':
+          main.empty();
+          for (let job of data.jobs) {
+            let div = $($('#job-template')[0].content.cloneNode(true).querySelector('.job'));
+            renderJobInto(job, div);
+            if (job.after) {
+              job.div = div;
+              app.arrange.push(job);
+            }
+            else {
+              let group = $('<div class="group"/>');
+              if (job.nextrun) group.attr('data-sortkey', job.nextrun.replace(/^.*T/, '').replace(/\+.*/, ''));
+              else group.attr('data-sortkey', '00:00');
+              main.append(group.append(div));
+            }
+          }
+          rearrange();
+          $('main').children().sortDomElements((a, b) => a.dataset.sortkey==b.dataset.sortkey?0:(a.dataset.sortkey>b.dataset.sortkey?1:-1));
+          break;
+        case 'update':
+          for (let job of data.jobs) {
+            let div = $($('#job-template')[0].content.cloneNode(true).querySelector('.job'));
+            renderJobInto(job, div);
+            let exist = $(document.getElementById('job/' + job.path));
+            if (!exist.length) {
+              console.log('Div for job ' + job.path + ' not found');
+              if (job.after) {
+                job.div = div;
+                app.arrange.push(job);
+              }
+              else {
+                let group = $('<div class="group"/>');
+                if (job.nextrun) group.attr('data-sortkey', job.nextrun.replace(/^.*T/, '').replace(/\+.*/, ''));
+                else group.attr('data-sortkey', '00:00');
+                main.append(group.append(div));
+              }
+            }
+            else exist.replaceWith(div);
+          }
+          rearrange();
+          break;
+        case 'details':
+          let dialog = document.getElementById('details/' + data.details.path);
+          if (!dialog) break;
+          if (app.dialog == 'log') $(dialog).find('pre').text(data.details.log);
+          else $(dialog).find('pre').text(data.details.err);
+          break;
+        default:
+          console.log('Received unknown message: ' + data.msg);
+      }
+    };
+    app.socket.onclose = function(event) {
+      console.log('close', event);
+      setStatus('Disconnected', 'black', 'red');
+    };
+    app.socket.onerror = function(event) {
+      console.log('error', event);
+      setStatus('Error: ' + event.data, 'white', 'orange');
+    };
+  }
+  function setStatus(text, fg, bg) {
+    $('#status').text(text).css({ color: fg, backgroundColor: bg });
+  }
+  function renderJobInto(job, div) {
+    div.prop('id', 'job/' + job.path);
+    div.find('.job-name').text(job.name).prop('title', job.path);
+    if (job.history) div.find('.job-history').css('display', 'block');
+    if (job.nextrun) div.find('.job-nextrun').text('Next run: ' + job.nextrun.replace('T', ' ').replace(/:\d\d\+.*/, ''));
+    else if (job.after) div.find('.job-nextrun').text('🡇');
+    else div.find('.job-nextrun').text('Not scheduled');
+    if (job.error) {
+      div.addClass('job-failure');
+      div.find('.job-lastrun').text('Permanent error: ' + job.error);
+      div.find('.job-duration').css('flex-grow', '0');
+      div.find('.job-row3').remove();
+      return;
+    }
+    else if (job.running) {
+      div.addClass('job-running');
+      div.find('.job-lastrun').text('Running').data('start', job.lastrun);
+      let diff = dayjs().diff(dayjs(job.lastrun), 'minute');
+      if (diff >= 1) div.find('.job-duration').text('Duration: ' + secsToDur(diff*60));
+      div.find('.job-log').html('&nbsp;');
+      return;
+    }
+    else {
+      switch (job.laststatus) {
+        case null:
+          div.addClass('job-neutral');
+          div.find('.job-lastrun').text('Not yet run');
+          break;
+        case 0:
+          div.addClass('job-success');
+          if (job.lasterr > 0) div.find('.job-duration').text(`Duration: ${secsToDur(job.lastdur)}`);
+          else div.find('.job-duration').text(`Duration: ${secsToDur(job.lastdur)}`);
+          break;
+        default:
+          div.addClass('job-failure');
+          div.find('.job-duration').text(`Failed after: ${secsToDur(job.lastdur)}`);
+      }
+    }
+    if (job.laststatus !== null) {
+      let lastrun = dayjs(job.lastrun);
+      if (lastrun.isAfter(dayjs())) lastrun = dayjs();
+      div.find('.job-lastrun').prop('title', job.lastrun.replace('T', ' ').replace(/(\.|\+).*/, '')).text('Last start: ' + lastrun.fromNow());
+      if (job.lastlog == 0) div.find('.job-log').text('No messages');
+      else div.find('.job-log').text(job.lastlog + ' message' + (job.lastlog==1?'':'s'));
+      if (job.lastlog > 0) div.find('.job-log').addClass('job-log-active');
+      if (job.lasterr == 0) div.find('.job-err').text('No errors');
+      else div.find('.job-err').text(job.lasterr + ' error' + (job.lasterr==1?'':'s'));
+      if (job.lasterr > 0) div.find('.job-err').addClass('job-log-active');
+    }
+  }
+  function secsToDur(secs) {
+    if (secs === 0) return "0s";
+    let delta = [ 31449600, 604800, 86400, 3600, 60, 1 ];
+    let unit = [ 'y', 'w', 'd', 'h', 'm', 's' ];
+    let c = 0;
+    let result = "";
+    while (secs < delta[c]) c+= 1;
+    result += Math.floor(secs/delta[c]) + unit[c];
+    secs = secs%delta[c];
+    if (secs === 0) return result;
+    c += 1;
+    return result + ' ' + Math.floor(secs/delta[c]) + unit[c];
+  }
+  jQuery.fn.sortDomElements = (function() {
+        return function(comparator) {
+            return Array.prototype.sort.call(this, comparator).each(function(i) {
+                  this.parentNode.appendChild(this);
+            });
+        };
+    })();
+</script>
+<style>
+*, *:before, *:after { box-sizing: border-box; }
+BODY { margin: 0; background-color: black; color: white; font-family: sans-serif; }
+MAIN { display: grid; gap: 5px; grid-template-columns: repeat(auto-fill, minmax(27rem, 1fr)); }
+#status { position: absolute; bottom: 1rem; right: 1rem; padding: 0.5rem; border-radius: 0.5rem; }
+.group { background-color: rgb(45, 45, 45); }
+.job { margin: 0.5rem; border-radius:0.5rem; padding: 0.35rem 0.6rem; }
+.job-row { display: flex; justify-content: space-between; }
+.job-row > * { width: 1rem; flex-grow: 1; text-align: center; }
+.job-row > *:first-child { text-align: left; }
+.job-row > *:last-child { text-align: right; }
+.job-row1,.job-row2 { padding-bottom: 0.3rem; }
+.job-row2,.job-row3 { border-top: solid black 2px; padding-top: 0.25rem; }
+.job-history { display: none; flex-grow: 0; cursor: pointer; }
+.job-history > * { display: block; height: 18px; }
+.job-log-active { text-decoration: underline; cursor: pointer; }
+.job-err.job-log-active { color: red }
+.job-neutral { background-color: rgb(70, 70, 70); }
+.job-success { background-color: rgb(0, 100, 0); }
+.job-failure { background-color: rgb(100, 0, 0); }
+.job-running { background-color: rgb(100, 80, 0); }
+DIALOG { background-color: black; color: white; max-height: 90vh; max-width: 90vw; }
+DIALOG::backdrop { background-color: rgba(0, 0, 0, 0.5); }
+DIALOG H2 { margin-top: 0; }
+DIALOG PRE { margin: 0; }
+</style>
+</head>
+<body>
+  <main></main>
+  <div id="status"></div>
+</body>
+<template id="job-template">
+  <div class="job">
+    <div class="job-row job-row1">
+      <div class="job-name"></div>
+      <div class="job-history">
+        <svg class="button-svg" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="2 2 20 20" fill="white"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"></path></svg>
+      </div>
+      <div class="job-nextrun"></div>
+    </div>
+    <div class="job-row job-row2">
+      <div class="job-lastrun"></div>
+      <div class="job-duration"></div>
+    </div>
+    <div class="job-row job-row3">
+      <div class="job-log"></div>
+      <div class="job-err"></div>
+    </div>
+  </div>
+</template>
+</html>
