@@ -209,16 +209,11 @@ async fn main() -> process::ExitCode {
         runner::run(aconfig, broadcast).await;
     });
 
-    match net::TcpListener::bind("0.0.0.0:1234").await {
-        Ok(listener) => {
-            let aconfig = config.clone();
-            let broadcast = bctx.clone();
-            tokio::spawn(async move {
-                web::run(aconfig, listener, broadcast).await;
-            });
-        },
-        Err(e) => eprintln!("Failed to bind: {}", e)
-    };
+    let aconfig = config.clone();
+    let broadcast = bctx.clone();
+    let web = tokio::spawn(async move {
+        web::run(aconfig, broadcast).await;
+    });
 
     let (ntx, mut nrx) = mpsc::channel(10);
     let watchdir = rnrdir.clone();
