@@ -12,6 +12,11 @@ struct JsonDetails {
     log: String,
     err: String
 }
+#[derive(Clone)]
+struct AppState {
+    config: Arc<RwLock<Config>>,
+    broadcast: broadcast::Sender<Job>
+}
 
 pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
     let app = Router::new()
@@ -19,17 +24,17 @@ pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>)
         .route("/jobs", get(jobs))
         .route("/jobs/{path}", get(job))
         .route("/updates", get(updates))
-        .with_state((config, broadcast));
+        .with_state(AppState { config, broadcast });
     let listener = tokio::net::TcpListener::bind("0.0.0.0:1234").await.unwrap();
     axum::serve(listener, app).await.unwrap()
 }
 
-async fn jobs(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>) -> Json<Vec<JsonJob>> {
-    Json(state.0.read().unwrap().jobs.values().map(|j| j.to_json()).collect())
+async fn jobs(State(state): State<AppState>) -> Json<Vec<JsonJob>> {
+    Json(state.config.read().unwrap().jobs.values().map(|j| j.to_json()).collect())
 }
 
-async fn job(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>, Path(path): Path<String>) -> Result<Json<JsonDetails>, StatusCode> {
-    if let Some(job) = state.0.read().unwrap().jobs.get(&path) {
+async fn job(State(state): State<AppState>, Path(path): Path<String>) -> Result<Json<JsonDetails>, StatusCode> {
+    if let Some(job) = state.config.read().unwrap().jobs.get(&path) {
         if let Some(lastrun) = &job.lastrun {
             return Ok(Json(JsonDetails {
                 log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
@@ -40,8 +45,8 @@ async fn job(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>,
     Err(StatusCode::NOT_FOUND)
 }
 
-async fn updates(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job>)>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = state.1.subscribe();
+async fn updates(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.broadcast.subscribe();
     Sse::new(try_stream! {
         yield Event::default();
         loop {
@@ -50,7 +55,7 @@ async fn updates(State(state): State<(Arc<RwLock<Config>>, broadcast::Sender<Job
                     let data = serde_json::to_string(&job.to_json()).unwrap();
                     yield Event::default().data(data);
                 },
-                Err(_e) => break
+                Err(_) => break
             }
         }
     }).keep_alive(KeepAlive::default())
