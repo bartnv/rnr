@@ -6,9 +6,7 @@ use crate::{ Config, Job, Schedule, duration_from };
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Receiver<Box<Job>>, mut spawner: mpsc::Sender<Box<Job>>, mut websockets: broadcast::Sender<Job>) {
     while let Some(update) = runner.recv().await {
         if update.running {
-            if let Err(e) = websockets.send(*update) {
-                eprintln!("Broadcast error: {}", e);
-            }
+            let _ = websockets.send(*update);
             continue;
         }
         let mut job = None;
@@ -40,9 +38,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                 job.laststart = update.laststart;
                 job.lastrun = Some(run);
             }
-            if let Err(e) = websockets.send(job.clone()) {
-                eprintln!("Broadcast error: {}", e);
-            }
+            let _ = websockets.send(job.clone());
         }
         for mut job in doafter {
             job.laststart = Some(chrono::Local::now());

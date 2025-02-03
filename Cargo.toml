@@ -9,7 +9,6 @@ axum = { version = "0", default-features = true, features = [ "macros" ] }
 chrono = { version = "0", features = ["serde"] }
 cron = "0"
 futures = "0"
-futures-util = "0"
 git-version = "0"
 notify = "7"
 serde = { version = "1", features = [ "derive" ] }

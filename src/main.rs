@@ -3,7 +3,7 @@ use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, os::unix::ff
 use git_version::git_version;
 use notify::{ event::{ AccessKind, AccessMode, CreateKind, RemoveKind }, EventKind, Watcher };
 use serde::Serialize;
-use tokio::{fs, io::AsyncReadExt as _, net, sync::{ broadcast, mpsc } };
+use tokio::{fs, io::AsyncReadExt as _, sync::{ broadcast, mpsc } };
 use yaml_rust2::YamlLoader;
 
 mod control;
@@ -205,13 +205,13 @@ async fn main() -> process::ExitCode {
     let (bctx, _) = broadcast::channel(100);
     let aconfig = config.clone();
     let broadcast = bctx.clone();
-    let rnr = tokio::spawn(async move {
+    tokio::spawn(async move {
         runner::run(aconfig, broadcast).await;
     });
 
     let aconfig = config.clone();
     let broadcast = bctx.clone();
-    let web = tokio::spawn(async move {
+    tokio::spawn(async move {
         web::run(aconfig, broadcast).await;
     });
 
@@ -269,7 +269,7 @@ async fn main() -> process::ExitCode {
         }
     }
 
-    tokio::join!(rnr).0.unwrap();
+    // Never reached
     process::ExitCode::SUCCESS
 }
 
