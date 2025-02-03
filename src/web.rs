@@ -1,4 +1,4 @@
-use crate::{ Config, Job, JsonJob };
+use crate::{ Config, Job, JsonJob, JsonRun };
 use std::{ convert::Infallible, sync::{ Arc, RwLock } };
 use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
@@ -7,13 +7,6 @@ use tokio::{io::AsyncReadExt as _, sync::broadcast};
 use async_stream::try_stream;
 use tower_http::services::ServeFile;
 
-#[derive(Default, Serialize)]
-struct JsonRun {
-    ts: String,
-    status: u8,
-    log: String,
-    err: String
-}
 #[derive(Clone)]
 struct AppState {
     config: Arc<RwLock<Config>>,
@@ -40,12 +33,7 @@ async fn jobs(State(state): State<AppState>) -> Json<Vec<JsonJob>> {
 async fn job(State(state): State<AppState>, Path(path): Path<String>) -> Result<Json<JsonRun>, StatusCode> {
     if let Some(job) = state.config.read().unwrap().jobs.get(&path) {
         if let Some(lastrun) = &job.lastrun {
-            return Ok(Json(JsonRun {
-                ts: lastrun.start.to_rfc3339(),
-                status: lastrun.output.status.code().unwrap() as u8,
-                log: String::from_utf8_lossy(&lastrun.output.stdout).into_owned(),
-                err: String::from_utf8_lossy(&lastrun.output.stderr).into_owned()
-            }));
+            return Ok(Json(lastrun.to_json()));
         }
     }
     Err(StatusCode::NOT_FOUND)
@@ -68,7 +56,7 @@ async fn runs(State(state): State<AppState>, Path(path): Path<String>) -> Result
                     Err(_) => continue
                 }
                 let path = dirpath.join(entry.path());
-                let mut run = JsonRun { ts: entry.file_name().to_string_lossy().to_string(), ..Default::default() };
+                let mut run = JsonRun { start: entry.file_name().to_string_lossy().to_string(), ..Default::default() };
                 run.status = match tokio::fs::File::open(path.join("status")).await {
                     Ok(mut file) => {
                         let mut status = String::new();
@@ -111,7 +99,7 @@ async fn runs(State(state): State<AppState>, Path(path): Path<String>) -> Result
             return Err(StatusCode::NOT_FOUND);
         }
     }
-    res.sort_by_key(|i| i.ts.clone());
+    res.sort_by_key(|i| i.start.clone());
     Ok(Json(res))
 }
 

@@ -33,22 +33,24 @@ struct Run {
     duration: time::Duration,
     output: process::Output
 }
-
-#[derive(Serialize)]
-struct JsonJob {
-    path: String,
-    name: String,
-    nextrun: Option<chrono::DateTime<chrono::Local>>,
-    after: Option<String>,
-    command: String,
-    error: Option<String>,
-    running: bool,
-    laststatus: Option<i32>,
-    lastrun: Option<chrono::DateTime<chrono::Local>>,
-    lastdur: u64,
-    lastlog: usize,
-    lasterr: usize,
-    history: bool
+#[derive(Default, Serialize)]
+struct JsonRun {
+    start: String,
+    duration: u64,
+    status: u8,
+    log: String,
+    err: String
+}
+impl Run {
+    fn to_json(&self) -> JsonRun {
+        JsonRun {
+            start: self.start.to_rfc3339(),
+            duration: self.duration.as_secs(),
+            status: self.output.status.code().unwrap() as u8,
+            log: String::from_utf8_lossy(&self.output.stdout).to_string(),
+            err: String::from_utf8_lossy(&self.output.stderr).to_string()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -64,6 +66,19 @@ struct Job {
     lastrun: Option<Run>,
     history: bool,
     update: bool
+}
+#[derive(Serialize)]
+struct JsonJob {
+    name: String,
+    path: String,
+    command: String,
+    nextrun: Option<chrono::DateTime<chrono::Local>>,
+    after: Option<String>,
+    error: Option<String>,
+    running: bool,
+    laststart: Option<chrono::DateTime<chrono::Local>>,
+    lastrun: Option<JsonRun>,
+    history: bool
 }
 impl Job {
     fn clone_empty(&self) -> Job {
@@ -148,24 +163,13 @@ impl Job {
             },
             error: self.error.clone(),
             running: self.running,
-            laststatus: self.lastrun.as_ref().map(|run| run.output.status.code().unwrap()),
-            lastrun: self.laststart,
-            lastdur: match &self.lastrun {
-                Some(run) => run.duration.as_secs(),
-                None => 0
-            },
-            lastlog: match &self.lastrun {
-                Some(run) => run.output.stdout.lines().count(),
-                None => 0
-            },
-            lasterr: match &self.lastrun {
-                Some(run) => run.output.stderr.lines().count(),
-                None => 0
-            },
+            laststart: self.laststart,
+            lastrun: self.lastrun.as_ref().map(|r| r.to_json()),
             history: self.history
         }
     }
 }
+
 
 #[tokio::main]
 async fn main() -> process::ExitCode {
