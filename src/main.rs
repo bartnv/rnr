@@ -389,6 +389,7 @@ fn update_job(config: &Arc<RwLock<Config>>, path: PathBuf, bctx: broadcast::Send
             newjob.running = oldjob.running;
             newjob.laststart = oldjob.laststart;
             newjob.lastrun = oldjob.lastrun;
+            newjob.history = oldjob.history;
             println!("{} [{}] reloaded", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
         }
         else { println!("{} [{}] added", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname); }
