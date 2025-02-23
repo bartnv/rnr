@@ -304,6 +304,7 @@ async fn process_config(config: &Arc<RwLock<Config>>) {
     }
 }
 
+#[allow(clippy::await_holding_lock)] // We're not yet multithreaded at this point, so it doesn't matter
 async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
     let mut wconfig = config.write().unwrap();
     while let Ok(Some(entry)) = dir.next_entry().await {

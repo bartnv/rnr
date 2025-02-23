@@ -134,14 +134,8 @@ async fn get_updates(State(state): State<AppState>) -> Sse<impl Stream<Item = Re
     let mut rx = state.broadcast.subscribe();
     Sse::new(try_stream! {
         yield Event::default();
-        loop {
-            match rx.recv().await {
-                Ok(job) => {
-                    let data = serde_json::to_string(&job.to_json()).unwrap();
-                    yield Event::default().data(data);
-                },
-                Err(_) => break
-            }
+        while let Ok(job) = rx.recv().await {
+            yield Event::default().data(serde_json::to_string(&job.to_json()).unwrap());
         }
     }).keep_alive(KeepAlive::default())
 }
