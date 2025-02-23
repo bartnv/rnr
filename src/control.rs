@@ -22,7 +22,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             };
             let job = match job {
                 Some(job) => job,
-                None => { eprintln!("Job with path {} not found", update.path.display()); continue; }
+                None => { eprintln!("Job \"{}\" not found", update.path.display()); continue; }
             };
             job.running = false;
             job.history = update.history;

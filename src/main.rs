@@ -330,8 +330,8 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
         };
         if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
         else { println!("Found job {} ({}) to run: {}", job.path.display(), job.name, job.command.join(" ")); }
-        if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().map_or("not scheduled".to_string(), |n| n.to_string())); }
-        if let Schedule::After(ref after) = job.schedule { println!("Execution after job(s): {}", after.join(" ")); }
+        // if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().map_or("not scheduled".to_string(), |n| n.to_string())); }
+        // if let Schedule::After(ref after) = job.schedule { println!("Execution after job(s): {}", after.join(" ")); }
         if wconfig.dir.join(&job.path).join("runs").is_dir() { job.history = true; }
         wconfig.jobs.insert(job.path.display().to_string(), job);
     }
@@ -344,7 +344,7 @@ fn check_jobs(config: &Arc<RwLock<Config>>) {
         if let Schedule::After(after) = &job.schedule {
             for path in after {
                 if !paths.contains(path) {
-                    eprintln!("Job {} scheduled after job {} which doesn't exist", job.path.display(), path);
+                    eprintln!("Job \"{}\" scheduled after job \"{}\" which doesn't exist", job.path.display(), path);
                     job.error = Some(format!("Scheduled after nonexistent job {}", path));
                 }
             }

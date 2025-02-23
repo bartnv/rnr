@@ -123,7 +123,7 @@ async fn get_config(State(state): State<AppState>, Path(path): Path<String>) -> 
             String::from_utf8_lossy(&contents).into_owned()
         }
         Err(_) => {
-            eprintln!("Job path {} requested on config endpoint has no job.yml file", path);
+            eprintln!("Job \"{}\" requested on config endpoint has no job.yml file", path);
             return Err(StatusCode::NOT_FOUND);
         }
     };

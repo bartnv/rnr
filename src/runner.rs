@@ -24,7 +24,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
                         skip = true;
                         cjob.skipped += 1;
                         job.skipped = cjob.skipped;
-                        eprintln!("Skipping run of job {} because it is already running", cjob.path.display());
+                        eprintln!("Job \"{}\" skipped because it is already running", cjob.path.display());
                     }
                     else {
                         cjob.skipped = 0;
