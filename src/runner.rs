@@ -18,13 +18,25 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::
             let ctrltx = ctrltx.clone();
             let config = aconfig.clone();
             tokio::spawn(async move {
+                let mut skip = false;
                 if let Some(cjob) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
                     if cjob.running {
+                        skip = true;
+                        cjob.skipped += 1;
+                        job.skipped = cjob.skipped;
                         eprintln!("Skipping run of job {} because it is already running", cjob.path.display());
-                        return;
                     }
-                    cjob.running = true;
-                    cjob.laststart = job.laststart;
+                    else {
+                        cjob.skipped = 0;
+                        cjob.running = true;
+                        cjob.laststart = job.laststart;
+                    }
+                }
+                if skip {
+                    if let Err(e) = ctrltx.send(job).await {
+                        eprintln!("Send error: {}", e);
+                    }
+                    return;
                 }
                 job.running = true;
                 if let Err(e) = ctrltx.send(job.clone()).await {

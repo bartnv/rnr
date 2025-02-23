@@ -64,6 +64,7 @@ struct Job {
     running: bool,
     laststart: Option<chrono::DateTime<chrono::Local>>,
     lastrun: Option<Run>,
+    skipped: usize,
     history: bool,
     update: bool
 }
@@ -78,6 +79,7 @@ struct JsonJob {
     running: bool,
     laststart: Option<chrono::DateTime<chrono::Local>>,
     lastrun: Option<JsonRun>,
+    skipped: usize,
     history: bool
 }
 impl Job {
@@ -92,6 +94,7 @@ impl Job {
             running: self.running,
             laststart: None,
             lastrun: None,
+            skipped: 0,
             history: self.history,
             update: false
         }
@@ -165,6 +168,7 @@ impl Job {
             running: self.running,
             laststart: self.laststart,
             lastrun: self.lastrun.as_ref().map(|r| r.to_json()),
+            skipped: self.skipped,
             history: self.history
         }
     }
