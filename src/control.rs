@@ -11,6 +11,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
         }
         let mut job = None;
         let mut doafter = vec![];
+        let mut failed = false;
         {
             let mut wconfig = config.write().unwrap();
             for ajob in wconfig.jobs.values_mut() {
@@ -29,11 +30,15 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             if let Some(e) = update.error {
                 eprintln!("Job \"{}\" permanent error: {}", update.name, e);
                 job.error = Some(e);
+                failed = true;
             }
             if let Some(run) = update.lastrun {
                 match run.output.status.success() {
                     true => println!("{} [{}] ran successfully in {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs())),
-                    false => println!("{} [{}] failed after {} with error code {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
+                    false => {
+                        failed = true;
+                        println!("{} [{}] failed after {} with error code {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), update.path.display(), duration_from(run.duration.as_secs()), run.output.status.code().map_or("(unknown)".to_string(), |c| c.to_string()))
+                    }
                 };
                 job.laststart = update.laststart;
                 job.lastrun = Some(run);
@@ -41,6 +46,14 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             let _ = websockets.send(job.clone());
         }
         for mut job in doafter {
+            if failed {
+                if let Some(job) = config.write().unwrap().jobs.get_mut(&job.path.display().to_string()) {
+                    job.skipped += 1;
+                    let _ = websockets.send(job.clone());
+                }
+                eprintln!("Job \"{}\" skipped because job \"{}\" failed", job.path.display(), update.path.display());
+                continue;
+            }
             job.laststart = Some(chrono::Local::now());
             spawner.send(job).await.unwrap();
         }

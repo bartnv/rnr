@@ -118,8 +118,14 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     job.history = true;
     filename.push("status");
     match tokio::fs::File::create(&filename).await {
-        Ok(mut file) => file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await.unwrap(),
-        Err(e) => { job.error = Some(format!("Failed to write status file: {}", e)); return job; }
+        Ok(mut file) => if let Err(e) = file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await {
+            eprintln!("Job \"{}\" failed to write status file: {}", job.path.display(), e);
+            return job;
+        },
+        Err(e) => {
+            eprintln!("Job \"{}\" failed to create status file: {}", job.path.display(), e);
+            return job;
+        }
     };
     if !output.stdout.is_empty() {
         filename.pop();
