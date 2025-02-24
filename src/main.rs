@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, os::unix::ffi::OsStrExt, path::PathBuf, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
+use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, net::SocketAddr, os::unix::ffi::OsStrExt, path::PathBuf, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
 use git_version::git_version;
 use notify::{ event::{ AccessKind, AccessMode, CreateKind, RemoveKind }, EventKind, Watcher };
 use serde::Serialize;
@@ -15,7 +15,8 @@ const VERSION: &str = git_version!();
 struct Config {
     dir: PathBuf,
     jobs: HashMap<String, Job>,
-    env: HashMap<String, String>
+    env: HashMap<String, String>,
+    http: Option<SocketAddr>
 }
 
 #[derive(Clone, Debug, Default)]
@@ -185,7 +186,7 @@ async fn main() -> process::ExitCode {
         }
     };
     println!("Starting rnr {} in {}", VERSION, rnrdir.display());
-    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new() }));
+    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new(), http: None }));
     process_config(&config).await;
     let dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
@@ -217,11 +218,13 @@ async fn main() -> process::ExitCode {
         runner::run(aconfig, broadcast).await;
     });
 
-    let aconfig = config.clone();
-    let broadcast = bctx.clone();
-    tokio::spawn(async move {
-        web::run(aconfig, broadcast).await;
-    });
+    if config.read().unwrap().http.is_some() {
+        let aconfig = config.clone();
+        let broadcast = bctx.clone();
+        tokio::spawn(async move {
+            web::run(aconfig, broadcast).await;
+        });
+    }
 
     let (ntx, mut nrx) = mpsc::channel(10);
     let watchdir = rnrdir.clone();
@@ -300,11 +303,20 @@ async fn process_config(config: &Arc<RwLock<Config>>) {
         }
     };
     let yaml = &docs[0];
+    let mut wconfig = config.write().unwrap();
     if let Some(env) = yaml["env"].as_hash() {
-        let mut wconfig = config.write().unwrap();
         for (key, value) in env  {
             wconfig.env.insert(key.as_str().unwrap().to_owned(), value.as_str().unwrap().to_owned());
         }
+    }
+    if let Some(addr) = yaml["http"].as_str() {
+        wconfig.http = match addr.parse() {
+            Ok(sa) => Some(sa),
+            Err(e) => {
+                eprintln!("Failed to parse HTTP listen adress \"{}\"; HTTP API not enabled", addr);
+                None
+            }
+        };
     }
 }
 

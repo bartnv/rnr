@@ -14,6 +14,7 @@ struct AppState {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
+    let addr = config.read().unwrap().http.unwrap().clone();
     let app = Router::new()
         .route_service("/", ServeFile::new("rnr/web/index.html"))
         .route_service("/favicon.ico", ServeFile::new("rnr/web/favicon.ico"))
@@ -23,7 +24,8 @@ pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>)
         .route("/jobs/{path}/config", get(get_config))
         .route("/updates", get(get_updates))
         .with_state(AppState { config, broadcast });
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:1234").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    println!("Starting HTTP API on {}", addr);
     axum::serve(listener, app).await.unwrap()
 }
 
