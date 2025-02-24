@@ -84,6 +84,13 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                         continue;
                     }
                 };
+                if let Ok(mut file) = tokio::fs::File::open(path.join("dur")).await {
+                    let mut str = String::new();
+                    if let Err(e) = file.read_to_string(&mut str).await {
+                        eprintln!("Failed to read {}/dur even though it exists: {}", path.display(), e);
+                    }
+                    else { run.duration = str.parse().unwrap_or_default(); }
+                }
                 if let Ok(mut file) = tokio::fs::File::open(path.join("out")).await {
                     if let Err(e) = file.read_to_string(&mut run.log).await {
                         eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);

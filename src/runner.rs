@@ -108,7 +108,8 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         Ok(output) => output,
         Err(e) => { job.error = Some(format!("Failed to start: {}", e)); return job; }
     };
-    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: start.elapsed(), output });
+    let duration = start.elapsed();
+    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: duration.clone(), output });
     let output = &job.lastrun.as_ref().unwrap().output;
     let mut filename = config.read().unwrap().dir.clone();
     filename.push(job.path.clone());
@@ -127,18 +128,23 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
             return job;
         }
     };
+    filename.pop();
+    filename.push("dur");
+    if let Ok(mut file) = tokio::fs::File::create(&filename).await {
+        let _ = file.write_all(format!("{}", duration.as_secs()).as_bytes()).await;
+    }
     if !output.stdout.is_empty() {
         filename.pop();
         filename.push("out");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&output.stdout).await.unwrap();
+            let _ = file.write_all(&output.stdout).await;
         };
     }
     if !output.stderr.is_empty() {
         filename.pop();
         filename.push("err");
         if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            file.write_all(&output.stderr).await.unwrap();
+            let _ = file.write_all(&output.stderr).await;
         };
     }
     job
