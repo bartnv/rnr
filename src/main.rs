@@ -59,6 +59,7 @@ struct Job {
     name: String,
     path: PathBuf,
     command: Vec<String>,
+    input: Option<String>,
     workdir: Option<PathBuf>,
     schedule: Schedule,
     error: Option<String>,
@@ -89,6 +90,7 @@ impl Job {
             name: self.name.clone(),
             path: self.path.clone(),
             command: self.command.clone(),
+            input: self.input.clone(),
             workdir: self.workdir.clone(),
             schedule: self.schedule.clone(),
             error: None,
@@ -138,11 +140,13 @@ impl Job {
             Ok(args) => args,
             Err(e) => { return Job::from_error(Some(name), path, format!("Invalid command found in jobfile: {}", e)); }
         };
+        let input = config["input"].as_str().map(String::from);
         let workdir = config["workdir"].as_str().map(PathBuf::from);
         Job {
             name,
             path,
             command,
+            input,
             workdir,
             schedule,
             ..Default::default()

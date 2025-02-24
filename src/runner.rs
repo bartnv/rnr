@@ -1,4 +1,4 @@
-use std::{ sync, time };
+use std::{ process::Stdio, sync, time };
 use tokio::{ io::AsyncWriteExt as _, sync::{ broadcast, mpsc } };
 
 use crate::{ control, Config, Job, Run, Schedule };
@@ -103,10 +103,28 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     if let Some(ref dir) = job.workdir {
         cmd.current_dir(dir);
     }
+    cmd.stdin(Stdio::piped())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
     let start = time::Instant::now();
-    let output = match cmd.output().await {
+    let mut proc = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => { job.error = Some(format!("Failed to start: {e}")); return job; }
+    };
+    if let Some(input) = job.input.take() {
+        if let Some(mut stdin) = proc.stdin.take() {
+            let path = job.path.display().to_string();
+            tokio::spawn(async move {
+                if let Err(e) = stdin.write_all(input.as_bytes()).await {
+                    eprintln!("Failed to write to stdin for job {path}");
+                }
+            });
+        }
+        else { eprintln!("Failed to open stdin for job {}", job.path.display()); }
+    }
+    let output = match proc.wait_with_output().await {
         Ok(output) => output,
-        Err(e) => { job.error = Some(format!("Failed to start: {}", e)); return job; }
+        Err(e) => { job.error = Some(format!("Failed to read job stdout: {e}")); return job; }
     };
     let duration = start.elapsed();
     job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: duration.clone(), output });
