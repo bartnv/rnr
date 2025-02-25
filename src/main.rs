@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, net::SocketAddr, os::unix::ffi::OsStrExt, path::PathBuf, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
+use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, net::SocketAddr, os::unix::ffi::OsStrExt, path::{ Path, PathBuf }, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
 use git_version::git_version;
-use notify::{ event::{ AccessKind, AccessMode, CreateKind, RemoveKind }, EventKind, Watcher };
+use notify::{ event::{ AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode }, EventKind, Watcher };
 use serde::Serialize;
 use tokio::{fs, io::AsyncReadExt as _, sync::{ broadcast, mpsc } };
 use yaml_rust2::YamlLoader;
@@ -247,8 +247,8 @@ async fn main() -> process::ExitCode {
         }
     });
     while let Some(event) = nrx.recv().await {
+        if event.paths.is_empty() { continue; }
         if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind {
-            if event.paths.is_empty() { continue; }
             if let Some(filename) = event.paths[0].file_name() {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
@@ -257,7 +257,6 @@ async fn main() -> process::ExitCode {
             update_job(&config, dirpath, bctx.clone());
         }
         else if let EventKind::Create(CreateKind::Folder) = event.kind {
-            if event.paths.is_empty() { continue; }
             if let Some(parent) = event.paths[0].parent() {
                 if parent == rnrdir {
                     let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
@@ -269,7 +268,6 @@ async fn main() -> process::ExitCode {
             }
         }
         else if let EventKind::Remove(RemoveKind::File) = event.kind {
-            if event.paths.is_empty() { continue; }
             if let Some(filename) = event.paths[0].file_name() {
                 if filename != OsStr::from_bytes(b"job.yml") { continue; }
             }
@@ -279,6 +277,27 @@ async fn main() -> process::ExitCode {
             if let Ok(mut config) = config.write() {
                 if config.jobs.remove(&dirname).is_some() {
                     println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
+                }
+            }
+        }
+        else if let EventKind::Modify(ModifyKind::Name(RenameMode::From)) = event.kind {
+            let path = event.paths[0].strip_prefix(&rnrdir).unwrap().display().to_string();
+            if !path.contains("/") { // Direct subdir of rnrdir
+                println!("Job directory {path} moved away");
+                if let Ok(mut config) = config.write() {
+                    if config.jobs.remove(&path).is_some() {
+                        println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), path);
+                    }
+                }
+            }
+            // else: handle changes to job.yml or runs dir
+        }
+        else if let EventKind::Modify(ModifyKind::Name(RenameMode::To)) = event.kind {
+            let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
+            if path.parent() == Some(Path::new("")) { // Direct subdir of rnrdir
+                println!("Job directory {} moved back", path.display());
+                if config.read().unwrap().dir.join(&path).join("job.yml").is_file() {
+                    update_job(&config, path, bctx.clone());
                 }
             }
         }
