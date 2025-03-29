@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::sync;
-use tokio::sync::{ broadcast, mpsc };
+use std::{path::PathBuf, sync};
+use tokio::{fs::remove_dir_all, sync::{ broadcast, mpsc }};
 use crate::{ Config, Job, Schedule, duration_from };
 
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Receiver<Box<Job>>, mut spawner: mpsc::Sender<Box<Job>>, mut websockets: broadcast::Sender<Job>) {
@@ -14,6 +14,7 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
         let mut failed = false;
         {
             let mut wconfig = config.write().unwrap();
+            let dir = wconfig.dir.clone();
             for ajob in wconfig.jobs.values_mut() {
                 if let Schedule::After(after) = &ajob.schedule {
                     if after.contains(&update.path.display().to_string()) { doafter.push(Box::new(ajob.clone_empty())); }
@@ -49,6 +50,13 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
                 job.lastrun = Some(run);
             }
             let _ = websockets.send(job.clone());
+            if job.history {
+                let path = dir.join(&job.path);
+                let limit = wconfig.prune;
+                tokio::spawn(async move {
+                    prune(path, limit).await;
+                });
+            }
         }
         for mut job in doafter {
             if failed {
@@ -62,5 +70,28 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             job.laststart = Some(chrono::Local::now());
             spawner.send(job).await.unwrap();
         }
+    }
+}
+
+async fn prune(mut path: PathBuf, limit: usize) {
+    path.push("runs");
+    if let Ok(mut dir) = tokio::fs::read_dir(&path).await {
+        let mut subdirs = vec![];
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            if let Ok(ftype) = entry.file_type().await {
+                if ftype.is_dir() {
+                    subdirs.push(entry.file_name());
+                }
+            }
+        };
+        if subdirs.len() <= limit { return; }
+        subdirs.sort_unstable_by(|a, b| b.cmp(a)); // Reverse sort alphabetically
+        while subdirs.len() > limit {
+            if let Some(dir) = subdirs.pop() {
+                if let Err(e) = remove_dir_all(path.join(&dir)).await {
+                    eprintln!("Failed to remove runs subdir \"{}\": {}", path.join(&dir).display(), e);
+                }
+            }
+        };
     }
 }

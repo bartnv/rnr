@@ -16,7 +16,8 @@ struct Config {
     dir: PathBuf,
     jobs: HashMap<String, Job>,
     env: HashMap<String, String>,
-    http: Option<SocketAddr>
+    http: Option<SocketAddr>,
+    prune: usize
 }
 
 #[derive(Clone, Debug, Default)]
@@ -126,7 +127,7 @@ impl Job {
                     },
                     _ => match cron::Schedule::from_str(sched) {
                         Ok(sched) => Schedule::Schedule(sched),
-                        Err(err) => { return Job::from_error(Some(name), path, format!("Failed to parse schedule: {}", err)); }
+                        Err(err) => { return Job::from_error(Some(name), path, format!("Failed to parse schedule:\n{}", err)); }
                     }
                 }
             },
@@ -190,7 +191,7 @@ async fn main() -> process::ExitCode {
         }
     };
     println!("Starting rnr {} in {}", VERSION, rnrdir.display());
-    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new(), http: None }));
+    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new(), http: None, prune: 100 }));
     process_config(&config).await;
     let dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
@@ -340,6 +341,9 @@ async fn process_config(config: &Arc<RwLock<Config>>) {
                 None
             }
         };
+    }
+    if let Some(limit) = yaml["prune"].as_i64() {
+        wconfig.prune = limit as usize;
     }
 }
 
