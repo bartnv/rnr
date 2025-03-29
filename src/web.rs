@@ -3,27 +3,30 @@ use std::{ convert::Infallible, path::PathBuf, sync::{ Arc, RwLock } };
 use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
 use serde::Serialize;
-use tokio::{ fs, io::AsyncReadExt as _, sync::broadcast };
+use tokio::{ fs, io::AsyncReadExt as _, sync::{broadcast, mpsc} };
 use async_stream::try_stream;
 use tower_http::services::ServeFile;
 
 #[derive(Clone)]
 struct AppState {
     config: Arc<RwLock<Config>>,
-    broadcast: broadcast::Sender<Job>
+    broadcast: broadcast::Sender<Job>,
+    spawner: mpsc::Sender<Box<Job>>
 }
 
-pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
+pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>, spawner: mpsc::Sender<Box<Job>>) {
     let addr = config.read().unwrap().http.unwrap().clone();
     let app = Router::new()
         .route_service("/", ServeFile::new("rnr/web/index.html"))
         .route_service("/favicon.ico", ServeFile::new("rnr/web/favicon.ico"))
+        .route("/noop", get(|| async { StatusCode::OK }))
         .route("/jobs", get(get_jobs))
         .route("/jobs/{path}", get(get_job))
         .route("/jobs/{path}/runs", get(get_runs))
         .route("/jobs/{path}/config", get(get_config))
+        .route("/jobs/{path}/start", post(do_start))
         .route("/updates", get(get_updates))
-        .with_state(AppState { config, broadcast });
+        .with_state(AppState { config, broadcast, spawner });
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     println!("Starting HTTP API on {}", addr);
     axum::serve(listener, app).await.unwrap()
@@ -58,7 +61,7 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                     },
                     Err(_) => continue
                 }
-                let path = dirpath.join(entry.path());
+                let path = entry.path();
                 let mut run = JsonRun { start: entry.file_name().to_string_lossy().to_string(), ..Default::default() };
                 run.status = match tokio::fs::File::open(path.join("status")).await {
                     Ok(mut file) => {
@@ -137,6 +140,16 @@ async fn get_config(State(state): State<AppState>, Path(path): Path<String>) -> 
         }
     };
     Ok(jobfile)
+}
+
+async fn do_start(State(state): State<AppState>, Path(path): Path<String>) -> StatusCode {
+    let mut newjob = match state.config.read().unwrap().jobs.get(&path) {
+        Some(job) => Box::new(job.clone_empty()),
+        None => return StatusCode::NOT_FOUND
+    };
+    newjob.laststart = Some(chrono::Local::now());
+    state.spawner.send(newjob).await.unwrap();
+    StatusCode::OK
 }
 
 async fn get_updates(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

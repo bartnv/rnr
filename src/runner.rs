@@ -1,17 +1,26 @@
 use std::{ process::Stdio, sync, time };
 use tokio::{ io::AsyncWriteExt as _, sync::{ broadcast, mpsc } };
 
-use crate::{ control, Config, Job, Run, Schedule };
+use crate::{ control, web, Config, Job, Run, Schedule };
 
 pub async fn run(config: sync::Arc<sync::RwLock<Config>>, broadcast: broadcast::Sender<Job>) {
     let mut nextjobs: Vec<Box<Job>> = vec![];
     let (ctrltx, ctrlrx) = mpsc::channel(100);
     let (spawntx, mut spawnrx) = mpsc::channel(100);
     let aconfig = config.clone();
+    let abroadcast = broadcast.clone();
     let aspawntx = spawntx.clone();
     tokio::spawn(async move {
-        control::run(aconfig.clone(), ctrlrx, aspawntx, broadcast).await;
+        control::run(aconfig.clone(), ctrlrx, aspawntx, abroadcast).await;
     });
+    if config.read().unwrap().http.is_some() {
+        let config = config.clone();
+        let broadcast = broadcast.clone();
+        let spawntx = spawntx.clone();
+        tokio::spawn(async move {
+            web::run(config, broadcast, spawntx).await;
+        });
+    }
     let aconfig = config.clone();
     tokio::spawn(async move {
         while let Some(mut job) = spawnrx.recv().await {

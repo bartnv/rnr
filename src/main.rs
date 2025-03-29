@@ -223,14 +223,6 @@ async fn main() -> process::ExitCode {
         runner::run(aconfig, broadcast).await;
     });
 
-    if config.read().unwrap().http.is_some() {
-        let aconfig = config.clone();
-        let broadcast = bctx.clone();
-        tokio::spawn(async move {
-            web::run(aconfig, broadcast).await;
-        });
-    }
-
     let (ntx, mut nrx) = mpsc::channel(10);
     let watchdir = rnrdir.clone();
     tokio::task::spawn_blocking(move || {
