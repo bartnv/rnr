@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unreachable_patterns)] // Please be quiet, I'm coding
-use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, net::SocketAddr, os::unix::ffi::OsStrExt, path::{ Path, PathBuf }, process, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
+use std::{ collections::HashMap, env, ffi::OsStr, io::BufRead as _, net::SocketAddr, os::unix::{ffi::OsStrExt, process::ExitStatusExt}, path::{ Path, PathBuf }, process::{self, ExitStatus}, str::FromStr as _, sync::{ Arc, RwLock }, time::{self, Duration} };
 use git_version::git_version;
 use notify::{ event::{ AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode }, EventKind, Watcher };
 use serde::Serialize;
@@ -39,16 +39,71 @@ struct Run {
 struct JsonRun {
     start: String,
     duration: u64,
-    status: u8,
+    status: i32,
     log: String,
     err: String
 }
 impl Run {
+    async fn from_dir(path: PathBuf) -> Option<Run> {
+        let ndt = match chrono::NaiveDateTime::parse_from_str(path.file_name().unwrap().to_str().unwrap(), "%Y-%m-%d %H:%M") {
+            Ok(ndt) => ndt,
+            Err(_) => {
+                eprintln!("Invalid timestamp {}", path.display());
+                return None
+            }
+        };
+        let duration = match tokio::fs::File::open(path.join("dur")).await {
+            Ok(mut file) => {
+                let mut str = String::new();
+                if let Err(e) = file.read_to_string(&mut str).await {
+                    eprintln!("Failed to read {}/dur even though it exists: {}", path.display(), e);
+                    Duration::from_secs(0)
+                }
+                else { Duration::from_secs(str.parse().unwrap_or_default()) }
+            },
+            Err(_) => Duration::from_secs(0)
+        };
+        let output = process::Output {
+            status: ExitStatus::from_raw(statusfile_to_integer(path.join("status")).await << 8),
+            stdout: match tokio::fs::File::open(path.join("out")).await {
+                Ok(mut file) => {
+                    let mut out = vec![];
+                    match file.read_to_end(&mut out).await {
+                        Ok(_) => out,
+                        Err(e) => {
+                            eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);
+                            vec![]
+                        }
+                    }
+                },
+                Err(e) => vec![]
+            },
+            stderr: match tokio::fs::File::open(path.join("err")).await {
+                Ok(mut file) => {
+                    let mut err = vec![];
+                    match file.read_to_end(&mut err).await {
+                        Ok(_) => err,
+                        Err(e) => {
+                            eprintln!("Failed to read {}/err even though it exists: {}", path.display(), e);
+                            vec![]
+                        }
+                    }
+                },
+                Err(e) => vec![]
+            }
+        };
+
+        Some(Run {
+            start: ndt.and_local_timezone(chrono::Local).unwrap(),
+            duration,
+            output
+        })
+    }
     fn to_json(&self) -> JsonRun {
         JsonRun {
             start: self.start.to_rfc3339(),
             duration: self.duration.as_secs(),
-            status: self.output.status.code().unwrap() as u8,
+            status: self.output.status.code().unwrap(),
             log: String::from_utf8_lossy(&self.output.stdout).to_string(),
             err: String::from_utf8_lossy(&self.output.stderr).to_string()
         }
@@ -361,9 +416,25 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
         };
         if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
         else { println!("Found job {} ({}) to run: {}", job.path.display(), job.name, job.command.join(" ")); }
-        // if let Schedule::Schedule(ref sched) = job.schedule { println!("Next execution: {}", sched.upcoming(chrono::Local).next().map_or("not scheduled".to_string(), |n| n.to_string())); }
-        // if let Schedule::After(ref after) = job.schedule { println!("Execution after job(s): {}", after.join(" ")); }
-        if wconfig.dir.join(&job.path).join("runs").is_dir() { job.history = true; }
+        let runs = wconfig.dir.join(&job.path).join("runs");
+        if runs.is_dir() {
+            job.history = true;
+            if let Ok(mut dir) = tokio::fs::read_dir(&runs).await {
+                let mut subdirs = vec![];
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    if let Ok(ftype) = entry.file_type().await {
+                        if ftype.is_dir() {
+                            subdirs.push(entry.file_name());
+                        }
+                    }
+                };
+                if subdirs.len() > 0 {
+                    subdirs.sort_unstable();
+                    let run = Run::from_dir(runs.join(subdirs.last().unwrap()));
+                    job.lastrun = run.await;
+                }
+            }
+        }
         wconfig.jobs.insert(job.path.display().to_string(), job);
     }
 }
@@ -453,4 +524,32 @@ pub fn duration_from(mut secs: u64) -> String {
         result.push_str(&format!(" {}{}", secs/delta[c], unit[c]));
     }
     result
+}
+
+pub async fn statusfile_to_integer(path: PathBuf) -> i32 {
+    match tokio::fs::File::open(&path).await {
+        Ok(mut file) => {
+            let mut status = String::new();
+            if let Err(e) = file.read_to_string(&mut status).await {
+                eprintln!("Failed to read {}/status even though it exists: {}", path.display(), e);
+                return 0;
+            }
+            if status.len() < 2 { // Statusfile should contain at least one digit and a newline
+                eprintln!("Status file in {} is invalid", path.display());
+                return 0;
+            }
+            let value = match status[..status.len()-1].parse::<i32>() {
+                Ok(value) => value,
+                Err(e) => {
+                    eprintln!("Status file in {} did not contain a valid 8-bit integer: {}", path.display(), e);
+                    return 0;
+                }
+            };
+            value
+        },
+        Err(e) => {
+            eprintln!("Failed to read {}/status: {}", path.display(), e);
+            0
+        }
+    }
 }

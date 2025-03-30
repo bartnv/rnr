@@ -1,4 +1,4 @@
-use crate::{ Config, Job, JsonJob, JsonRun };
+use crate::{ Config, Job, JsonJob, JsonRun, statusfile_to_integer };
 use std::{ convert::Infallible, path::PathBuf, sync::{ Arc, RwLock } };
 use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
@@ -63,30 +63,7 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                 }
                 let path = entry.path();
                 let mut run = JsonRun { start: entry.file_name().to_string_lossy().to_string(), ..Default::default() };
-                run.status = match tokio::fs::File::open(path.join("status")).await {
-                    Ok(mut file) => {
-                        let mut status = String::new();
-                        if let Err(e) = file.read_to_string(&mut status).await {
-                            eprintln!("Failed to read {}/status even though it exists: {}", path.display(), e);
-                            continue;
-                        }
-                        if status.len() < 2 { // Statusfile should contain at least one digit and a newline
-                            eprintln!("Status file in {} is invalid", path.display());
-                            continue;
-                        }
-                        match status[..status.len()-1].parse::<u8>() {
-                            Ok(value) => value,
-                            Err(e) => {
-                                eprintln!("Status file in {} did not contain a valid 8-bit integer: {}", path.display(), e);
-                                continue;
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("Failed to read {}/status: {}", path.display(), e);
-                        continue;
-                    }
-                };
+                run.status = statusfile_to_integer(path.join("status")).await;
                 if let Ok(mut file) = tokio::fs::File::open(path.join("dur")).await {
                     let mut str = String::new();
                     if let Err(e) = file.read_to_string(&mut str).await {
