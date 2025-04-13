@@ -32,14 +32,17 @@ enum Schedule {
 #[derive(Clone, Debug)]
 struct Run {
     start: chrono::DateTime<chrono::Local>,
-    duration: time::Duration,
-    output: process::Output
+    duration: Option<time::Duration>,
+    status: Option<ExitStatus>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>
 }
 #[derive(Default, Serialize)]
 struct JsonRun {
     start: String,
-    duration: u64,
-    status: i32,
+    duration: Option<u64>,
+    status: String,
+    statustext: String,
     log: String,
     err: String
 }
@@ -57,55 +60,62 @@ impl Run {
                 let mut str = String::new();
                 if let Err(e) = file.read_to_string(&mut str).await {
                     eprintln!("Failed to read {}/dur even though it exists: {}", path.display(), e);
-                    Duration::from_secs(0)
+                    None
                 }
-                else { Duration::from_secs(str.parse().unwrap_or_default()) }
+                else { str.parse().map(Duration::from_secs).ok() }
             },
-            Err(_) => Duration::from_secs(0)
+            Err(_) => None
         };
-        let output = process::Output {
-            status: ExitStatus::from_raw(statusfile_to_integer(path.join("status")).await << 8),
-            stdout: match tokio::fs::File::open(path.join("out")).await {
-                Ok(mut file) => {
-                    let mut out = vec![];
-                    match file.read_to_end(&mut out).await {
-                        Ok(_) => out,
-                        Err(e) => {
-                            eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);
-                            vec![]
-                        }
+        let status = read_statusfile(path.join("status")).await.map(ExitStatus::from_raw);
+        let stdout = match tokio::fs::File::open(path.join("out")).await {
+            Ok(mut file) => {
+                let mut out = vec![];
+                match file.read_to_end(&mut out).await {
+                    Ok(_) => out,
+                    Err(e) => {
+                        eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);
+                        vec![]
                     }
-                },
-                Err(e) => vec![]
+                }
             },
-            stderr: match tokio::fs::File::open(path.join("err")).await {
-                Ok(mut file) => {
-                    let mut err = vec![];
-                    match file.read_to_end(&mut err).await {
-                        Ok(_) => err,
-                        Err(e) => {
-                            eprintln!("Failed to read {}/err even though it exists: {}", path.display(), e);
-                            vec![]
-                        }
+            Err(e) => vec![]
+        };
+        let stderr = match tokio::fs::File::open(path.join("err")).await {
+            Ok(mut file) => {
+                let mut err = vec![];
+                match file.read_to_end(&mut err).await {
+                    Ok(_) => err,
+                    Err(e) => {
+                        eprintln!("Failed to read {}/err even though it exists: {}", path.display(), e);
+                        vec![]
                     }
-                },
-                Err(e) => vec![]
-            }
+                }
+            },
+            Err(e) => vec![]
         };
 
         Some(Run {
             start: ndt.and_local_timezone(chrono::Local).unwrap(),
             duration,
-            output
+            status,
+            stdout,
+            stderr
         })
     }
     fn to_json(&self) -> JsonRun {
         JsonRun {
             start: self.start.to_rfc3339(),
-            duration: self.duration.as_secs(),
-            status: self.output.status.code().unwrap(),
-            log: String::from_utf8_lossy(&self.output.stdout).to_string(),
-            err: String::from_utf8_lossy(&self.output.stderr).to_string()
+            duration: self.duration.map(|v| v.as_secs()),
+            status: match self.status {
+                Some(status) => match status.success() { true => "OK", false => "Failed" },
+                None => "Unknown"
+            }.to_string(),
+            statustext: match self.status {
+                Some(status) => match status.success() { true => String::new(), false => status.to_string() },
+                None => "exit status not recorded".to_string()
+            },
+            log: String::from_utf8_lossy(&self.stdout).to_string(),
+            err: String::from_utf8_lossy(&self.stderr).to_string()
         }
     }
 }
@@ -526,30 +536,27 @@ pub fn duration_from(mut secs: u64) -> String {
     result
 }
 
-pub async fn statusfile_to_integer(path: PathBuf) -> i32 {
+pub async fn read_statusfile(path: PathBuf) -> Option<i32> {
     match tokio::fs::File::open(&path).await {
         Ok(mut file) => {
             let mut status = String::new();
             if let Err(e) = file.read_to_string(&mut status).await {
                 eprintln!("Failed to read {}/status even though it exists: {}", path.display(), e);
-                return 0;
+                return None;
             }
             if status.len() < 2 { // Statusfile should contain at least one digit and a newline
                 eprintln!("Status file in {} is invalid", path.display());
-                return 0;
+                return None;
             }
             let value = match status[..status.len()-1].parse::<i32>() {
                 Ok(value) => value,
                 Err(e) => {
-                    eprintln!("Status file in {} did not contain a valid 8-bit integer: {}", path.display(), e);
-                    return 0;
+                    eprintln!("Status file in {} did not contain a valid integer: {}", path.display(), e);
+                    return None;
                 }
             };
-            value
+            Some(value)
         },
-        Err(e) => {
-            eprintln!("Failed to read {}/status: {}", path.display(), e);
-            0
-        }
+        Err(e) => None
     }
 }

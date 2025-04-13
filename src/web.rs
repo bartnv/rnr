@@ -1,5 +1,5 @@
-use crate::{ Config, Job, JsonJob, JsonRun, statusfile_to_integer };
-use std::{ convert::Infallible, path::PathBuf, sync::{ Arc, RwLock } };
+use crate::{ Config, Job, JsonJob, JsonRun, read_statusfile };
+use std::{ convert::Infallible, os::unix::process::ExitStatusExt as _, path::PathBuf, process::ExitStatus, sync::{ Arc, RwLock } };
 use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
 use serde::Serialize;
@@ -47,10 +47,15 @@ async fn get_job(State(state): State<AppState>, Path(path): Path<String>) -> Res
 
 async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Result<Json<Vec<JsonRun>>, StatusCode> {
     let dirpath = match state.config.read() {
-        Ok(config) => config.dir.join(path).join("runs"),
+        Ok(config) => config.dir.join(&path).join("runs"),
         Err(_) => return Err(StatusCode::NOT_FOUND)
     };
     if !dirpath.is_dir() { return Err(StatusCode::NOT_FOUND); }
+    let running = match state.config.read().unwrap().jobs.get(&path) {
+        Some(job) if job.running => job.laststart.map(|v| v.format("%Y-%m-%d %H:%M").to_string()),
+        Some(_) => None,
+        None => return Err(StatusCode::NOT_FOUND)
+    };
     let mut res = vec![];
     match tokio::fs::read_dir(&dirpath).await {
         Ok(mut dir) => {
@@ -62,14 +67,29 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                     Err(_) => continue
                 }
                 let path = entry.path();
-                let mut run = JsonRun { start: entry.file_name().to_string_lossy().to_string(), ..Default::default() };
-                run.status = statusfile_to_integer(path.join("status")).await;
+                let exitstatus = read_statusfile(path.join("status")).await.map(ExitStatus::from_raw);
+                let mut status = match exitstatus {
+                    Some(status) => match status.success() { true => "OK", false => "Failure" },
+                    None => "Unknown"
+                }.to_string();
+                let mut statustext = match exitstatus {
+                    Some(status) => match status.success() { true => String::new(), false => status.to_string() },
+                    None => "exit status not recorded".to_string()
+                };
+                let start = entry.file_name().to_string_lossy().to_string();
+                if let Some(ref running) = running {
+                    if *running == start {
+                        status = "Running".to_string();
+                        statustext = String::new();
+                    }
+                }
+                let mut run = JsonRun { start, status, statustext, ..Default::default() };
                 if let Ok(mut file) = tokio::fs::File::open(path.join("dur")).await {
                     let mut str = String::new();
                     if let Err(e) = file.read_to_string(&mut str).await {
                         eprintln!("Failed to read {}/dur even though it exists: {}", path.display(), e);
                     }
-                    else { run.duration = str.parse().unwrap_or_default(); }
+                    else { run.duration = str.parse().ok(); }
                 }
                 if let Ok(mut file) = tokio::fs::File::open(path.join("out")).await {
                     if let Err(e) = file.read_to_string(&mut run.log).await {

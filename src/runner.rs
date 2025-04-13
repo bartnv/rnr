@@ -1,5 +1,5 @@
-use std::{ process::Stdio, sync, time };
-use tokio::{ io::AsyncWriteExt as _, sync::{ broadcast, mpsc } };
+use std::{ os::unix::process::ExitStatusExt as _, process::Stdio, sync, time };
+use tokio::{ io::{AsyncReadExt as _, AsyncWriteExt as _}, process, sync::{ broadcast, mpsc } };
 
 use crate::{ control, web, Config, Job, Run, Schedule };
 
@@ -120,6 +120,12 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         Ok(child) => child,
         Err(e) => { job.error = Some(format!("Failed to start: {e}")); return job; }
     };
+    let mut filename = config.read().unwrap().dir.clone();
+    filename.push(job.path.clone());
+    filename.push("runs");
+    filename.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
+    if tokio::fs::create_dir(&filename).await.is_ok() { job.history = true; }
+
     if let Some(input) = job.input.take() {
         if let Some(mut stdin) = proc.stdin.take() {
             let path = job.path.display().to_string();
@@ -131,48 +137,79 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         }
         else { eprintln!("Failed to open stdin for job {}", job.path.display()); }
     }
-    let output = match proc.wait_with_output().await {
-        Ok(output) => output,
-        Err(e) => { job.error = Some(format!("Failed to read job stdout: {e}")); return job; }
+    let outreader = {
+        let mut stdout = proc.stdout.take().unwrap();
+        let filename = filename.join("out");
+        tokio::spawn(async move {
+            let mut out: Vec<u8> = vec![];
+            let mut buf = vec![0; 1024];
+            let mut file = tokio::fs::File::create(&filename).await;
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        out.extend_from_slice(&buf[0..n]);
+                        if let Ok(ref mut file) = file {
+                            let _ = file.write_all(&buf[0..n]).await;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Read error on stdout");
+                    }
+                }
+            }
+            out
+        })
+    };
+    let errreader = {
+        let mut stderr = proc.stderr.take().unwrap();
+        let filename = filename.join("err");
+        tokio::spawn(async move {
+            let mut err = vec![];
+            let mut buf = vec![0; 1024];
+            let mut file = tokio::fs::File::create(&filename).await;
+            loop {
+                match stderr.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        err.extend_from_slice(&buf[0..n]);
+                        if let Ok(ref mut file) = file {
+                            let _ = file.write_all(&buf[0..n]).await;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Read error on stderr");
+                    }
+                }
+            }
+            err
+        })
+    };
+
+    let status = match proc.wait().await {
+        Ok(status) => status,
+        Err(e) => { job.error = Some(format!("Failed to read job status: {e}")); return job; }
     };
     let duration = start.elapsed();
-    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: duration.clone(), output });
-    let output = &job.lastrun.as_ref().unwrap().output;
-    let mut filename = config.read().unwrap().dir.clone();
-    filename.push(job.path.clone());
-    filename.push("runs");
-    filename.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
-    if tokio::fs::create_dir(&filename).await.is_err() { return job; }
-    job.history = true;
-    filename.push("status");
-    match tokio::fs::File::create(&filename).await {
-        Ok(mut file) => if let Err(e) = file.write_all(output.status.code().map_or("unknown\n".to_string(), |c| c.to_string() + "\n").as_bytes()).await {
-            eprintln!("Job \"{}\" failed to write status file: {}", job.path.display(), e);
-            return job;
-        },
-        Err(e) => {
-            eprintln!("Job \"{}\" failed to create status file: {}", job.path.display(), e);
-            return job;
+    let statusline = status.into_raw().to_string() + "\n";
+    let stdout = outreader.await.unwrap_or_default();
+    let stderr = errreader.await.unwrap_or_default();
+    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: Some(duration.clone()), status: Some(status), stdout, stderr });
+
+    if job.history {
+        match tokio::fs::File::create(&filename.join("status")).await {
+            Ok(mut file) => if let Err(e) = file.write_all(statusline.as_bytes()).await {
+                eprintln!("Job \"{}\" failed to write status file: {}", job.path.display(), e);
+                return job;
+            },
+            Err(e) => {
+                eprintln!("Job \"{}\" failed to create status file: {}", job.path.display(), e);
+                return job;
+            }
+        };
+        if let Ok(mut file) = tokio::fs::File::create(&filename.join("dur")).await {
+            let _ = file.write_all(format!("{}", duration.as_secs()).as_bytes()).await;
         }
-    };
-    filename.pop();
-    filename.push("dur");
-    if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-        let _ = file.write_all(format!("{}", duration.as_secs()).as_bytes()).await;
-    }
-    if !output.stdout.is_empty() {
-        filename.pop();
-        filename.push("out");
-        if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            let _ = file.write_all(&output.stdout).await;
-        };
-    }
-    if !output.stderr.is_empty() {
-        filename.pop();
-        filename.push("err");
-        if let Ok(mut file) = tokio::fs::File::create(&filename).await {
-            let _ = file.write_all(&output.stderr).await;
-        };
     }
     job
 }
