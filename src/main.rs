@@ -66,7 +66,7 @@ impl Run {
             },
             Err(_) => None
         };
-        let status = read_statusfile(path.join("status")).await.map(ExitStatus::from_raw);
+        let status = read_statusfile(&path.join("status")).await.map(ExitStatus::from_raw);
         let stdout = match tokio::fs::File::open(path.join("out")).await {
             Ok(mut file) => {
                 let mut out = vec![];
@@ -536,7 +536,7 @@ pub fn duration_from(mut secs: u64) -> String {
     result
 }
 
-pub async fn read_statusfile(path: PathBuf) -> Option<i32> {
+pub async fn read_statusfile(path: &PathBuf) -> Option<i32> {
     match tokio::fs::File::open(&path).await {
         Ok(mut file) => {
             let mut status = String::new();

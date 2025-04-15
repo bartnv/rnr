@@ -2,8 +2,9 @@ use crate::{ Config, Job, JsonJob, JsonRun, read_statusfile };
 use std::{ convert::Infallible, os::unix::process::ExitStatusExt as _, path::PathBuf, process::ExitStatus, sync::{ Arc, RwLock } };
 use axum::{ extract::{ Path, State }, http::StatusCode, response::sse::{ Event, KeepAlive, Sse }, routing::{ get, post }, Json, Router };
 use futures::Stream;
+use notify::{event::{AccessKind, AccessMode, DataChange, ModifyKind}, EventKind, Watcher};
 use serde::Serialize;
-use tokio::{ fs, io::AsyncReadExt as _, sync::{broadcast, mpsc} };
+use tokio::{ fs::File, io::AsyncReadExt as _, sync::{broadcast, mpsc} };
 use async_stream::try_stream;
 use tower_http::services::ServeFile;
 
@@ -23,6 +24,7 @@ pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>,
         .route("/jobs", get(get_jobs))
         .route("/jobs/{path}", get(get_job))
         .route("/jobs/{path}/runs", get(get_runs))
+        .route("/jobs/{path}/runs/{run}/output", get(get_output))
         .route("/jobs/{path}/config", get(get_config))
         .route("/jobs/{path}/start", post(do_start))
         .route("/updates", get(get_updates))
@@ -67,7 +69,7 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                     Err(_) => continue
                 }
                 let path = entry.path();
-                let exitstatus = read_statusfile(path.join("status")).await.map(ExitStatus::from_raw);
+                let exitstatus = read_statusfile(&path.join("status")).await.map(ExitStatus::from_raw);
                 let mut status = match exitstatus {
                     Some(status) => match status.success() { true => "OK", false => "Failure" },
                     None => "Unknown"
@@ -122,7 +124,7 @@ async fn get_config(State(state): State<AppState>, Path(path): Path<String>) -> 
         }
         rconfig.dir.join(&path).join("job.yml").to_path_buf()
     };
-    let jobfile = match fs::File::open(filename).await {
+    let jobfile = match File::open(filename).await {
         Ok(mut file) => {
             let mut contents = vec![];
             if let Err(e) = file.read_to_end(&mut contents).await {
@@ -157,4 +159,86 @@ async fn get_updates(State(state): State<AppState>) -> Sse<impl Stream<Item = Re
             yield Event::default().data(serde_json::to_string(&job.to_json()).unwrap());
         }
     }).keep_alive(KeepAlive::default())
+}
+
+#[derive(Serialize)]
+struct RunOutput {
+    field: &'static str,
+    value: String
+}
+async fn get_output(State(state): State<AppState>, Path((path, run)): Path<(String, String)>) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let dirpath = match state.config.read() {
+        Ok(config) => config.dir.join(&path).join("runs").join(&run),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR)
+    };
+    if !dirpath.is_dir() { return Err(StatusCode::NOT_FOUND); }
+
+    let (ntx, mut nrx) = mpsc::channel(10);
+    let watchdir = dirpath.clone();
+    tokio::task::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+        watcher.watch(&watchdir, notify::RecursiveMode::Recursive).unwrap();
+        while let Ok(res) = rx.recv() {
+            let ntx = ntx.clone();
+            tokio::spawn(async move {
+                match res {
+                    Ok(event) => ntx.send(event).await.unwrap(),
+                    Err(e) => eprintln!("Notify error: {}", e)
+                }
+            });
+        }
+    });
+
+    let mut stdout = match File::open(dirpath.join("out")).await {
+        Ok(fh) => fh,
+        Err(e) => {
+            eprintln!("Failed to open {}/out: {}", dirpath.display(), e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let mut stderr = match File::open(dirpath.join("err")).await {
+        Ok(fh) => fh,
+        Err(e) => {
+            eprintln!("Failed to open {}/err: {}", dirpath.display(), e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    Ok(Sse::new(try_stream! {
+        let mut buf = [0; 1024];
+        yield Event::default();
+        while let Ok(n) = stdout.read(&mut buf).await {
+            if n == 0 { break; }
+            yield Event::default().json_data(RunOutput { field: "stdout", value: String::from_utf8_lossy(&buf[0..n]).to_string() }).unwrap();
+        }
+        while let Ok(n) = stderr.read(&mut buf).await {
+            if n == 0 { break; }
+            yield Event::default().json_data(RunOutput { field: "stderr", value: String::from_utf8_lossy(&buf[0..n]).to_string() }).unwrap();
+        }
+        while let Some(event) = nrx.recv().await {
+            if let EventKind::Modify(ModifyKind::Data(_)) = event.kind {
+                if event.paths[0].ends_with("out") {
+                    while let Ok(n) = stdout.read(&mut buf).await {
+                        if n == 0 { break; }
+                        yield Event::default().json_data(RunOutput { field: "stdout", value: String::from_utf8_lossy(&buf[0..n]).to_string() }).unwrap();
+                    }
+                }
+                else if event.paths[0].ends_with("err") {
+                    while let Ok(n) = stderr.read(&mut buf).await {
+                        if n == 0 { break; }
+                        yield Event::default().json_data(RunOutput { field: "stderr", value: String::from_utf8_lossy(&buf[0..n]).to_string() }).unwrap();
+                    }
+                }
+            }
+            else if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind {
+                if event.paths[0].ends_with("status") {
+                    match read_statusfile(&event.paths[0]).await.map(ExitStatus::from_raw) {
+                        Some(status) => yield Event::default().json_data(RunOutput { field: "status", value: status.to_string() }).unwrap(),
+                        None => yield Event::default().json_data(RunOutput { field: "error", value: "Failed to read exit status".to_string() }).unwrap()
+                    }
+                    return;
+                }
+            }
+        }
+    }).keep_alive(KeepAlive::default()))
 }
