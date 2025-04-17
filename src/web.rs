@@ -180,13 +180,10 @@ async fn get_output(State(state): State<AppState>, Path((path, run)): Path<(Stri
         let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
         watcher.watch(&watchdir, notify::RecursiveMode::Recursive).unwrap();
         while let Ok(res) = rx.recv() {
-            let ntx = ntx.clone();
-            tokio::spawn(async move {
-                match res {
-                    Ok(event) => ntx.send(event).await.unwrap(),
-                    Err(e) => eprintln!("Notify error: {}", e)
-                }
-            });
+            match res {
+                Ok(event) => if let Err(_) = ntx.blocking_send(event) { break; },
+                Err(e) => { eprintln!("Notify error: {}", e); break; }
+            };
         }
     });
 
@@ -233,8 +230,11 @@ async fn get_output(State(state): State<AppState>, Path((path, run)): Path<(Stri
             else if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind {
                 if event.paths[0].ends_with("status") {
                     match read_statusfile(&event.paths[0]).await.map(ExitStatus::from_raw) {
-                        Some(status) => yield Event::default().json_data(RunOutput { field: "status", value: status.to_string() }).unwrap(),
-                        None => yield Event::default().json_data(RunOutput { field: "error", value: "Failed to read exit status".to_string() }).unwrap()
+                        Some(status) => {
+                            let value = match status.success() { true => "finished successfully".to_string(), false => format!("failed with {}", status) };
+                            yield Event::default().json_data(RunOutput { field: "status", value }).unwrap()
+                        },
+                        None => yield Event::default().json_data(RunOutput { field: "status", value: "Failed to read exit status".to_string() }).unwrap()
                     }
                     return;
                 }
