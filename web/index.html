@@ -79,8 +79,25 @@
       let el = $(this);
       let path = el.closest('.job').prop('id').substring(4);
       let title = el.closest('.job').find('.job-name').text();
-      let content = `<h2>${title}</h2><table><thead><tr><th>start<th>status<th>reason<th>duration<th>messages<th>errors</tr></thead><tbody></tbody></table>`;
+      let content = `<div class="job-history-header"><h2>${title}</h2><div class="job-history-search"><input type="search" placeholder="Search job output"></div></div><table><thead><tr><th>start<th>status<th>reason<th>duration<th>messages<th>errors</tr></thead><tbody></tbody></table>`;
       let dialog = showDialog(`history/${path}`, content);
+      let search = dialog.find('.job-history-search > INPUT');
+      search.on('click', function(evt) {
+        evt.stopPropagation();
+      }).on('keydown', function(evt) {
+        if (evt.key == 'Enter') {
+          let term = search.val();
+          if (term.length) searchHistory(dialog, search.val());
+          else searchClear(dialog);
+        }
+        else if (evt.key == 'Escape') {
+          if (search.val().length) {
+            search.val('');
+            searchClear(dialog);
+            evt.preventDefault();
+          }
+        }
+      });
       dialog.find('tbody').on('click', '.job-log-active', function(evt) {
         evt.stopPropagation();
         let el = $(evt.target);
@@ -314,6 +331,37 @@
       else div.find('.job-log').text('No messages');
     }
   }
+  function searchHistory(dialog, term) {
+    let search, line;
+    dialog.find('.search-result').remove();
+    dialog.find('tbody tr').hide();
+    try {
+      search = new RegExp(term, 'im');
+      if (!term.startsWith('^')) term = '.*' + term;
+      if (!term.endsWith('$')) term = term + '.*';
+      line = new RegExp(term, 'gim');
+    } catch (e) {
+      return alert(`Search term ${term} is not a valid regular expression`);
+    }
+    for (let i in app.history) {
+      let run = app.history[i];
+      let out = '';
+      let err = '';
+      if (search.test(run.log)) out += run.log.match(line).join('\n');
+      if (search.test(run.err)) err += run.err.match(line).join('\n');
+      if (out.length || err.length) {
+        dialog.find(`tr[data-n="${i}"]`).show().after(`<tr class="search-result"><td colspan="6">${out}<span class="text-error">${err}</span></div></tr>`);
+      }
+    }
+    if (!dialog.find('tbody > tr:visible').length) {
+      dialog.find('tbody').append('<tr class="search-result"><td id="search-noresults" colspan="6">No matches</div></tr>');
+    }
+  }
+  function searchClear(dialog) {
+    console.log(dialog);
+    dialog.find('.search-result').remove();
+    dialog.find('tbody tr').show();
+  }
   function secsToDur(secs) {
     if (secs === null) return "";
     if (secs === 0) return "0s";
@@ -354,19 +402,24 @@ MAIN { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minm
 .job-actions > * { height: 18px; width: 18px; cursor: pointer; }
 .job-history { display: none; flex-grow: 0; }
 .job-history > * { display: block; height: 18px; }
+.job-history-header { display: flex; }
+.job-history-search { margin-left: auto; padding-left: 1rem; }
 .job-log-active { text-decoration: underline; cursor: pointer; }
-.job-err.job-log-active, .job-skipped { color: red }
+.job-err.job-log-active, .job-skipped, .text-error { color: red }
 .job-neutral { background-color: rgb(70, 70, 70); }
 .job-success { background-color: rgb(0, 100, 0); }
 .job-failure { background-color: rgb(100, 0, 0); }
 .job-running { background-color: rgb(100, 80, 0); }
 .job-link-running { text-decoration: underline; cursor: pointer; }
+.search-result { text-align: left; white-space: pre-wrap; font-family: monospace; }
+.search-result TD { padding: 3px 1rem; }
+#search-noresults { font-style: italic; text-align: center; font-size: large; }
 DIALOG { background-color: black; color: white; max-height: 90vh; max-width: 90vw; }
 DIALOG::backdrop { background-color: rgba(0, 0, 0, 0.5); }
 DIALOG H2 { margin-top: 0; }
 DIALOG PRE { margin: 0; }
 DIALOG TABLE { border-collapse: collapse; text-align: center; }
-DIALOG TABLE TH { padding: 0 3px; }
+DIALOG TABLE TH { padding: 0 5px; }
 DIALOG TABLE TD { padding: 3px 3px 2px 3px; }
 DIALOG TEXTAREA { max-height: 75vh; width: min(50rem, 80vw); white-space: pre; }
 #run-follow-status { padding: 5px; }
@@ -386,7 +439,6 @@ DIALOG TEXTAREA { max-height: 75vh; width: min(50rem, 80vw); white-space: pre; }
       <div class="job-name"></div>
       <div class="job-actions">
         <div class="job-history" title="Show history">
-          <!-- <svg xmlns="http://www.w3.org/2000/svg" height="100%" width="100%" viewBox="2 2 20 20" fill="white"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"></path></svg> -->
           <svg xmlns="http://www.w3.org/2000/svg" height="100%" width="100%" viewBox="80 -880 800 800" fill="white"><path d="m612-292 56-56-148-148v-184h-80v216l172 172ZM480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-400Zm0 320q133 0 226.5-93.5T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 133 93.5 226.5T480-160Z"/></svg>
         </div>
         <div class="job-start" title="Start now">
@@ -409,6 +461,12 @@ DIALOG TEXTAREA { max-height: 75vh; width: min(50rem, 80vw); white-space: pre; }
       <div class="job-log"></div>
       <div class="job-err"></div>
     </div>
+  </div>
+</template>
+<template id="search-template">
+  <div class="history-search">
+    <input id="history-search-input" type="search" placeholder="Search output">
+    <!-- <svg xmlns="http://www.w3.org/2000/svg" height="24px" width="24px" viewBox="0 -960 960 960" fill="white"><path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/></svg> -->
   </div>
 </template>
 </html>
