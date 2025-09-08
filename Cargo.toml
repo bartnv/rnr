@@ -1,7 +1,11 @@
 [package]
 name = "rnr"
 version = "0.1.0"
+description = "A filesystem-based job runner / scheduler"
+repository = "https://github.com/bartnv/rnr"
+license = "MIT"
 edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
 async-stream = "0"
