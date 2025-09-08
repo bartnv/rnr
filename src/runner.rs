@@ -194,7 +194,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     let statusline = status.into_raw().to_string() + "\n";
     let stdout = outreader.await.unwrap_or_default();
     let stderr = errreader.await.unwrap_or_default();
-    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: Some(duration.clone()), status: Some(status), stdout, stderr });
+    job.lastrun = Some(Run { start: job.laststart.unwrap(), duration: Some(duration), status: Some(status), stdout, stderr });
 
     if job.history {
         match tokio::fs::File::create(&filename.join("status")).await {

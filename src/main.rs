@@ -26,7 +26,7 @@ enum Schedule {
     None,
     Continuous,
     After(Vec<String>),
-    Schedule(cron::Schedule)
+    Schedule(Box<cron::Schedule>)
 }
 
 #[derive(Clone, Debug)]
@@ -191,7 +191,7 @@ impl Job {
                         None => { return Job::from_error(Some(name), path, format!("Invalid schedule expression: {}", sched)); }
                     },
                     _ => match cron::Schedule::from_str(sched) {
-                        Ok(sched) => Schedule::Schedule(sched),
+                        Ok(sched) => Schedule::Schedule(Box::new(sched)),
                         Err(err) => { return Job::from_error(Some(name), path, format!("Failed to parse schedule:\n{}", err)); }
                     }
                 }
@@ -315,13 +315,11 @@ async fn main() -> process::ExitCode {
             update_job(&config, dirpath, bctx.clone());
         }
         else if let EventKind::Create(CreateKind::Folder) = event.kind {
-            if let Some(parent) = event.paths[0].parent() {
-                if parent == rnrdir {
-                    let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
-                    println!("Subdirectory {} added", path.display());
-                    if path.join("job.yml").is_file() {
-                        update_job(&config, path, bctx.clone());
-                    }
+            if let Some(parent) = event.paths[0].parent() && parent == rnrdir {
+                let path = event.paths[0].strip_prefix(&rnrdir).unwrap().to_owned();
+                println!("Subdirectory {} added", path.display());
+                if path.join("job.yml").is_file() {
+                    update_job(&config, path, bctx.clone());
                 }
             }
         }
@@ -332,20 +330,16 @@ async fn main() -> process::ExitCode {
             else { continue; }
             let dirname = event.paths[0].parent().unwrap().strip_prefix(&rnrdir).unwrap().display().to_string();
             println!("Jobfile with path {} removed", dirname);
-            if let Ok(mut config) = config.write() {
-                if config.jobs.remove(&dirname).is_some() {
-                    println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
-                }
+            if let Ok(mut config) = config.write() && config.jobs.remove(&dirname).is_some() {
+                println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), dirname);
             }
         }
         else if let EventKind::Modify(ModifyKind::Name(RenameMode::From)) = event.kind {
             let path = event.paths[0].strip_prefix(&rnrdir).unwrap().display().to_string();
             if !path.contains("/") { // Direct subdir of rnrdir
                 println!("Job directory {path} moved away");
-                if let Ok(mut config) = config.write() {
-                    if config.jobs.remove(&path).is_some() {
-                        println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), path);
-                    }
+                if let Ok(mut config) = config.write() && config.jobs.remove(&path).is_some() {
+                    println!("{} [{}] deleted", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), path);
                 }
             }
             // else: handle changes to job.yml or runs dir
@@ -432,13 +426,11 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
             if let Ok(mut dir) = tokio::fs::read_dir(&runs).await {
                 let mut subdirs = vec![];
                 while let Ok(Some(entry)) = dir.next_entry().await {
-                    if let Ok(ftype) = entry.file_type().await {
-                        if ftype.is_dir() {
-                            subdirs.push(entry.file_name());
-                        }
+                    if let Ok(ftype) = entry.file_type().await && ftype.is_dir() {
+                        subdirs.push(entry.file_name());
                     }
                 };
-                if subdirs.len() > 0 {
+                if !subdirs.is_empty() {
                     subdirs.sort_unstable();
                     let run = Run::from_dir(runs.join(subdirs.last().unwrap()));
                     job.lastrun = run.await;

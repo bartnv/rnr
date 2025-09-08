@@ -16,8 +16,8 @@ pub async fn run(config: sync::Arc<sync::RwLock<Config>>, mut runner: mpsc::Rece
             let mut wconfig = config.write().unwrap();
             let dir = wconfig.dir.clone();
             for ajob in wconfig.jobs.values_mut() {
-                if let Schedule::After(after) = &ajob.schedule {
-                    if after.contains(&update.path.display().to_string()) { doafter.push(Box::new(ajob.clone_empty())); }
+                if let Schedule::After(after) = &ajob.schedule && after.contains(&update.path.display().to_string()) {
+                    doafter.push(Box::new(ajob.clone_empty()));
                 }
                 if ajob.path == update.path { job = Some(ajob); }
             };
@@ -78,19 +78,15 @@ async fn prune(mut path: PathBuf, limit: usize) {
     if let Ok(mut dir) = tokio::fs::read_dir(&path).await {
         let mut subdirs = vec![];
         while let Ok(Some(entry)) = dir.next_entry().await {
-            if let Ok(ftype) = entry.file_type().await {
-                if ftype.is_dir() {
-                    subdirs.push(entry.file_name());
-                }
+            if let Ok(ftype) = entry.file_type().await && ftype.is_dir() {
+                subdirs.push(entry.file_name());
             }
         };
         if subdirs.len() <= limit { return; }
         subdirs.sort_unstable_by(|a, b| b.cmp(a)); // Reverse sort alphabetically
         while subdirs.len() > limit {
-            if let Some(dir) = subdirs.pop() {
-                if let Err(e) = remove_dir_all(path.join(&dir)).await {
-                    eprintln!("Failed to remove runs subdir \"{}\": {}", path.join(&dir).display(), e);
-                }
+            if let Some(dir) = subdirs.pop() && let Err(e) = remove_dir_all(path.join(&dir)).await {
+                eprintln!("Failed to remove runs subdir \"{}\": {}", path.join(&dir).display(), e);
             }
         };
     }

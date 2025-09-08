@@ -16,7 +16,7 @@ struct AppState {
 }
 
 pub async fn run(config: Arc<RwLock<Config>>, broadcast: broadcast::Sender<Job>, spawner: mpsc::Sender<Box<Job>>) {
-    let addr = config.read().unwrap().http.unwrap().clone();
+    let addr = config.read().unwrap().http.unwrap();
     let app = Router::new()
         .route_service("/", ServeFile::new("rnr/web/index.html"))
         .route_service("/favicon.ico", ServeFile::new("rnr/web/favicon.ico"))
@@ -39,10 +39,8 @@ async fn get_jobs(State(state): State<AppState>) -> Json<Vec<JsonJob>> {
 }
 
 async fn get_job(State(state): State<AppState>, Path(path): Path<String>) -> Result<Json<JsonRun>, StatusCode> {
-    if let Some(job) = state.config.read().unwrap().jobs.get(&path) {
-        if let Some(lastrun) = &job.lastrun {
-            return Ok(Json(lastrun.to_json()));
-        }
+    if let Some(job) = state.config.read().unwrap().jobs.get(&path) && let Some(lastrun) = &job.lastrun {
+        return Ok(Json(lastrun.to_json()));
     }
     Err(StatusCode::NOT_FOUND)
 }
@@ -79,11 +77,9 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                     None => "exit status not recorded".to_string()
                 };
                 let start = entry.file_name().to_string_lossy().to_string();
-                if let Some(ref running) = running {
-                    if *running == start {
-                        status = "Running".to_string();
-                        statustext = String::new();
-                    }
+                if let Some(ref running) = running && *running == start {
+                    status = "Running".to_string();
+                    statustext = String::new();
                 }
                 let mut run = JsonRun { start, status, statustext, ..Default::default() };
                 if let Ok(mut file) = tokio::fs::File::open(path.join("dur")).await {
@@ -93,15 +89,11 @@ async fn get_runs(State(state): State<AppState>, Path(path): Path<String>) -> Re
                     }
                     else { run.duration = str.parse().ok(); }
                 }
-                if let Ok(mut file) = tokio::fs::File::open(path.join("out")).await {
-                    if let Err(e) = file.read_to_string(&mut run.log).await {
-                        eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);
-                    }
+                if let Ok(mut file) = tokio::fs::File::open(path.join("out")).await && let Err(e) = file.read_to_string(&mut run.log).await {
+                    eprintln!("Failed to read {}/out even though it exists: {}", path.display(), e);
                 };
-                if let Ok(mut file) = tokio::fs::File::open(path.join("err")).await {
-                    if let Err(e) = file.read_to_string(&mut run.err).await {
-                        eprintln!("Failed to read {}/err even though it exists: {}", path.display(), e);
-                    }
+                if let Ok(mut file) = tokio::fs::File::open(path.join("err")).await && let Err(e) = file.read_to_string(&mut run.err).await {
+                    eprintln!("Failed to read {}/err even though it exists: {}", path.display(), e);
                 };
                 res.push(run);
             }
@@ -181,7 +173,7 @@ async fn get_output(State(state): State<AppState>, Path((path, run)): Path<(Stri
         watcher.watch(&watchdir, notify::RecursiveMode::Recursive).unwrap();
         while let Ok(res) = rx.recv() {
             match res {
-                Ok(event) => if let Err(_) = ntx.blocking_send(event) { break; },
+                Ok(event) => if ntx.blocking_send(event).is_err() { break; },
                 Err(e) => { eprintln!("Notify error: {}", e); break; }
             };
         }
@@ -227,17 +219,15 @@ async fn get_output(State(state): State<AppState>, Path((path, run)): Path<(Stri
                     }
                 }
             }
-            else if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind {
-                if event.paths[0].ends_with("status") {
-                    match read_statusfile(&event.paths[0]).await.map(ExitStatus::from_raw) {
-                        Some(status) => {
-                            let value = match status.success() { true => "finished successfully".to_string(), false => format!("failed with {}", status) };
-                            yield Event::default().json_data(RunOutput { field: "status", value }).unwrap()
-                        },
-                        None => yield Event::default().json_data(RunOutput { field: "status", value: "Failed to read exit status".to_string() }).unwrap()
-                    }
-                    return;
+            else if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = event.kind && event.paths[0].ends_with("status") {
+                match read_statusfile(&event.paths[0]).await.map(ExitStatus::from_raw) {
+                    Some(status) => {
+                        let value = match status.success() { true => "finished successfully".to_string(), false => format!("failed with {}", status) };
+                        yield Event::default().json_data(RunOutput { field: "status", value }).unwrap()
+                    },
+                    None => yield Event::default().json_data(RunOutput { field: "status", value: "Failed to read exit status".to_string() }).unwrap()
                 }
+                return;
             }
         }
     }).keep_alive(KeepAlive::default()))
