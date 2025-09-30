@@ -1,5 +1,5 @@
 use std::{ os::unix::process::ExitStatusExt as _, process::Stdio, sync, time };
-use tokio::{ io::{AsyncReadExt as _, AsyncWriteExt as _}, process, sync::{ broadcast, mpsc } };
+use tokio::{ io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
 
 use crate::{ control, web, Config, Job, Run, Schedule };
 
@@ -138,6 +138,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         }
         else { eprintln!("Failed to open stdin for job {}", job.path.display()); }
     }
+    let (oob_tx, mut oob_rx) = mpsc::channel::<String>(10);
     let outreader = {
         let mut stdout = proc.stdout.take().unwrap();
         let filename = filename.join("out");
@@ -146,16 +147,28 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
             let mut buf = vec![0; 1024];
             let mut file = tokio::fs::File::create(&filename).await;
             loop {
-                match stdout.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        out.extend_from_slice(&buf[0..n]);
-                        if let Ok(ref mut file) = file {
-                            let _ = file.write_all(&buf[0..n]).await;
+                tokio::select!{
+                    result = stdout.read(&mut buf) => {
+                        match result {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                out.extend_from_slice(&buf[0..n]);
+                                if let Ok(ref mut file) = file {
+                                    let _ = file.write_all(&buf[0..n]).await;
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("Read error on stdout");
+                            }
                         }
-                    },
-                    Err(e) => {
-                        eprintln!("Read error on stdout");
+                    }
+                    result = oob_rx.recv() => {
+                        if let Some(line) = result {
+                            out.extend_from_slice(line.as_bytes());
+                            if let Ok(ref mut file) = file {
+                                let _ = file.write_all(line.as_bytes()).await;
+                            }
+                        }
                     }
                 }
             }
@@ -166,24 +179,25 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         let mut stderr = proc.stderr.take().unwrap();
         let filename = filename.join("err");
         tokio::spawn(async move {
-            let mut err = vec![];
-            let mut buf = vec![0; 1024];
+            let mut err = String::new();
+            let mut reader = BufReader::new(stderr);
             let mut file = tokio::fs::File::create(&filename).await;
-            loop {
-                match stderr.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        err.extend_from_slice(&buf[0..n]);
-                        if let Ok(ref mut file) = file {
-                            let _ = file.write_all(&buf[0..n]).await;
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("Read error on stderr");
+            let oobtags = config.read().unwrap().oobtags.clone();
+            while let Ok(bytes) = reader.read_line(&mut err).await {
+                if bytes == 0 { break; }
+                let start = err.len()-bytes;
+                for tag in oobtags.iter() {
+                    if err[start..].starts_with(tag) {
+                        let _ = oob_tx.send(err[start..].to_owned()).await;
+                        err.truncate(start);
+                        continue;
                     }
                 }
+                if let Ok(ref mut file) = file {
+                    let _ = file.write_all(&err.as_bytes()[start..]).await;
+                }
             }
-            err
+            err.into()
         })
     };
 

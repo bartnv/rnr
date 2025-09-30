@@ -12,12 +12,14 @@ mod web;
 
 const VERSION: &str = git_version!();
 
+#[derive(Default)]
 struct Config {
     dir: PathBuf,
     jobs: HashMap<String, Job>,
     env: HashMap<String, String>,
     http: Option<SocketAddr>,
-    prune: usize
+    prune: usize,
+    oobtags: Vec<String>
 }
 
 #[derive(Clone, Debug, Default)]
@@ -256,7 +258,7 @@ async fn main() -> process::ExitCode {
         }
     };
     println!("Starting rnr {} in {}", VERSION, rnrdir.display());
-    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), jobs: HashMap::new(), env: HashMap::new(), http: None, prune: 100 }));
+    let config = Arc::new(RwLock::new(Config { dir: rnrdir.clone(), prune: 100, ..Default::default() }));
     process_config(&config).await;
     let dir = match fs::read_dir(&rnrdir).await {
         Ok(dir) => dir,
@@ -395,6 +397,13 @@ async fn process_config(config: &Arc<RwLock<Config>>) {
     }
     if let Some(limit) = yaml["prune"].as_i64() {
         wconfig.prune = limit as usize;
+    }
+    if let Some(oobtags) = yaml["oobtags"].as_vec() {
+        for item in oobtags {
+            if let Some(tag) = item.as_str() {
+                wconfig.oobtags.push(tag.to_string());
+            }
+        }
     }
 }
 
