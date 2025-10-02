@@ -31,7 +31,7 @@ enum Schedule {
     Schedule(Box<cron::Schedule>)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Run {
     start: chrono::DateTime<chrono::Local>,
     duration: Option<time::Duration>,
@@ -129,6 +129,9 @@ struct Job {
     command: Vec<String>,
     input: Option<String>,
     workdir: Option<PathBuf>,
+    indir: Option<PathBuf>,
+    outdir: Option<PathBuf>,
+    stoponerror: bool,
     schedule: Schedule,
     error: Option<String>,
     running: bool,
@@ -160,6 +163,9 @@ impl Job {
             command: self.command.clone(),
             input: self.input.clone(),
             workdir: self.workdir.clone(),
+            indir: self.indir.clone(),
+            outdir: self.outdir.clone(),
+            stoponerror: self.stoponerror,
             schedule: self.schedule.clone(),
             error: None,
             running: self.running,
@@ -210,12 +216,18 @@ impl Job {
         };
         let input = config["input"].as_str().map(String::from);
         let workdir = config["workdir"].as_str().map(PathBuf::from);
+        let indir = config["indir"].as_str().map(PathBuf::from);
+        let outdir = config["outdir"].as_str().map(PathBuf::from);
+        let stoponerror = config["stoponerror"].as_bool().unwrap_or(false);
         Job {
             name,
             path,
             command,
             input,
             workdir,
+            indir,
+            outdir,
+            stoponerror,
             schedule,
             ..Default::default()
         }
@@ -428,7 +440,11 @@ async fn read_jobs(config: &Arc<RwLock<Config>>, mut dir: tokio::fs::ReadDir) {
             }
         };
         if let Some(ref e) = job.error { eprintln!("Job \"{}\" permanent error: {}", job.name, e); }
-        else { println!("Found job {} ({}) to run: {}", job.path.display(), job.name, job.command.join(" ")); }
+        else {
+            println!("Found job {} ({}) to run: {}{}", job.path.display(), job.name, job.command.join(" "),
+                match job.indir { Some(_) => " <inputfile>",  None => "" }
+            );
+        }
         let runs = wconfig.dir.join(&job.path).join("runs");
         if runs.is_dir() {
             job.history = true;
