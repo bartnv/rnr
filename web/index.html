@@ -189,7 +189,7 @@
       }
       if (app.arrange.length == start) {
         for (let job of app.arrange) {
-          job.div.find('.job-nextrun').text('Not scheduled');
+          job.div.find('.job-nextrun').text('Not scheduled').addClass('text-warning');
           let group = $('<div class="group"/>');
           group.attr('data-sortkey', job.name);
           $('main').append(group.append(job.div));
@@ -272,7 +272,7 @@
       div.find('.job-nextrun').text('Next start: ' + str).prop('title', job.nextrun.replace('T', ' '));
     }
     else if (job.after) div.find('.job-nextrun').text('Next start: after ' + job.after);
-    else div.find('.job-nextrun').text('Not scheduled');
+    else div.find('.job-nextrun').text('Not scheduled').addClass('text-warning');
     if (job.error) {
       div.addClass('job-failure');
       div.find('.job-laststart').text('Permanent error: ' + job.error);
@@ -405,6 +405,7 @@ MAIN { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minm
 .job-history-header { display: flex; }
 .job-history-search { margin-left: auto; padding-left: 1rem; }
 .job-log-active { text-decoration: underline; cursor: pointer; }
+.text-warning { color: orange; }
 .job-err.job-log-active, .job-skipped, .text-error { color: red }
 .job-neutral { background-color: rgb(70, 70, 70); }
 .job-success { background-color: rgb(0, 100, 0); }
