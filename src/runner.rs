@@ -137,7 +137,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
             Ok((duration, status, mut stdout, mut stderr)) => {
                 results.stdout.append(&mut stdout);
                 results.stderr.append(&mut stderr);
-                if let Some(mut dur) = results.duration { dur += duration; }
+                if let Some(ref mut dur) = results.duration { *dur += duration; }
                 if !status.success() {
                     if job.stoponerror {
                         results.status = Some(status);
