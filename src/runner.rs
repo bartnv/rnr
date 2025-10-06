@@ -115,30 +115,46 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
             while let Ok(Some(entry)) = iter.next_entry().await {
                 let path = entry.path();
                 if path.is_file() {
-                    vec.push(format!("{}/{}", indir.display(), entry.file_name().to_string_lossy()))
+                    vec.push(Some(indir.join(entry.file_name())));
                 }
             }
             vec
         },
-        None => vec![String::new()]
+        None => vec![None]
     };
     let mut rundir = config.read().unwrap().dir.clone();
     rundir.push(job.path.clone());
     rundir.push("runs");
     rundir.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
     if tokio::fs::create_dir(&rundir).await.is_ok() { job.history = true; }
-
+    
     let mut results = Run { start: job.laststart.unwrap(), duration: Some(Duration::new(0, 0)), ..Default::default() };
+    if args.is_empty() { // Job indir is empty; nothing to do
+        println!("{} [{}] skipped (no input files)", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display());
+        results.stdout = Vec::from("Nothing to process");
+        results.status = Some(ExitStatus::from_raw(0));
+        job.lastrun = Some(results);
+        return job;
+    }
     println!("{} [{}] starting {}{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), executable.display(),
-        match args.first().unwrap().len() { 0 => "", _ => &format!(" on {} input files", args.len()) }
+        match args.first().unwrap().is_some() { false => "", true => &format!(" on {} input files", args.len()) }
     );
-    for arg in args {
-        match run_cmd(config.clone(), &mut job, &rundir, &executable, arg).await {
+    let mut failures = 0;
+    for arg in &args {
+        if arg.is_some() && let Some(ref outdir) = job.outdir {
+            // Create a temporary File in outdir to ensure we can create it
+            // Then use tokio::fs::copy and unlink to move the data over
+        }
+        match run_cmd(config.clone(), &mut job, &rundir, &executable, arg.as_deref()).await {
             Ok((duration, status, mut stdout, mut stderr)) => {
+                if !status.success() && let Some(arg) = arg && stderr.is_empty() {
+                    stderr = Vec::from(format!("Failure on input file \"{}\": {}", arg.display(), status));
+                }
                 results.stdout.append(&mut stdout);
                 results.stderr.append(&mut stderr);
                 if let Some(ref mut dur) = results.duration { *dur += duration; }
                 if !status.success() {
+                    failures += 1;
                     if job.stoponerror {
                         results.status = Some(status);
                         break;
@@ -156,6 +172,9 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
                 return job;
             }
         }
+    }
+    if job.indir.is_some() && results.stdout.is_empty() {
+        results.stdout = Vec::from(format!("Processed {} input files succesfully", args.len()));
     }
 
     if job.history {
@@ -179,13 +198,13 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         }
     }
     job.lastrun = Some(results);
-    return job;
+    job
 }
 
-async fn run_cmd(config: Arc<RwLock<Config>>, job: &mut Box<Job>, rundir: &PathBuf, exe: &PathBuf, arg: String) -> Result<(Duration, ExitStatus, Vec<u8>, Vec<u8>), String> {
+async fn run_cmd(config: Arc<RwLock<Config>>, job: &mut Box<Job>, rundir: &Path, exe: &Path, arg: Option<&Path>) -> Result<(Duration, ExitStatus, Vec<u8>, Vec<u8>), String> {
     let mut cmd = tokio::process::Command::new(exe);
     cmd.args(&job.command[1..]);
-    if arg.len() > 0 { cmd.arg(arg); }
+    if let Some(arg) = arg { cmd.arg(arg); }
     if let Ok(config) = config.read() {
         cmd.envs(&config.env);
     }
@@ -281,5 +300,5 @@ async fn run_cmd(config: Arc<RwLock<Config>>, job: &mut Box<Job>, rundir: &PathB
     };
     let stdout = outreader.await.unwrap();
     let stderr = errreader.await.unwrap();
-    return Ok((start.elapsed(), status, stdout, stderr));
+    Ok((start.elapsed(), status, stdout, stderr))
 }
