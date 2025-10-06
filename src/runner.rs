@@ -168,6 +168,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
                 }
             },
             Err(e) => { // Permanently unable to run job
+                println!("{} [{}] fatal error: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), e);
                 job.error = Some(e);
                 return job;
             }
