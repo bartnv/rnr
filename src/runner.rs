@@ -1,5 +1,5 @@
-use std::{ os::unix::process::ExitStatusExt as _, path::PathBuf, process::{ExitStatus, Stdio}, sync::{self, Arc, RwLock}, time::{self, Duration} };
-use tokio::{ fs::{ File, read_dir }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
+use std::{ os::unix::process::ExitStatusExt as _, path::{Path, PathBuf}, process::{ExitStatus, Stdio}, sync::{self, Arc, RwLock}, time::{self, Duration} };
+use tokio::{ fs::{ File, read_dir, rename }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
 
 use crate::{ control, web, Config, Job, Run, Schedule };
 
@@ -165,6 +165,16 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
                 }
                 else { // Without stoponerror any success yields a final success result
                     results.status = Some(status);
+                    if let Some(arg) = arg && let Some(ref outdir) = job.outdir {
+                        let base = match job.workdir { Some(ref dir) => dir.clone(), None => PathBuf::new() };
+                        let out = base.join(outdir);
+                        if !out.is_dir() {
+                            eprintln!("Job {} outdir {} is not a directory", job.path.display(), out.display());
+                        }
+                        else if let Err(e) = rename(base.join(&arg), base.join(outdir).join(arg.file_name().unwrap())).await {
+                            eprintln!("Job {} failed to move processed file to outdir: {}", job.path.display(), e);
+                        }
+                    }
                 }
             },
             Err(e) => { // Permanently unable to run job
@@ -175,7 +185,7 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
         }
     }
     if job.indir.is_some() && results.stdout.is_empty() {
-        results.stdout = Vec::from(format!("Processed {} input files succesfully", args.len()));
+        results.stdout = Vec::from(format!("Processed {} input files succesfully", args.len()-failures));
     }
 
     if job.history {
