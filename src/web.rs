@@ -138,6 +138,7 @@ async fn do_start(State(state): State<AppState>, Path(path): Path<String>) -> St
         Some(job) => Box::new(job.clone_empty()),
         None => return StatusCode::NOT_FOUND
     };
+    println!("{} [{}] received start request from web interface", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), newjob.path.display());
     newjob.laststart = Some(chrono::Local::now());
     state.spawner.send(newjob).await.unwrap();
     StatusCode::OK
