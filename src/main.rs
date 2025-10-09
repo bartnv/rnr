@@ -132,6 +132,7 @@ struct Job {
     indir: Option<PathBuf>,
     outdir: Option<PathBuf>,
     stoponerror: bool,
+    logformat: Option<String>,
     schedule: Schedule,
     error: Option<String>,
     running: bool,
@@ -166,6 +167,7 @@ impl Job {
             indir: self.indir.clone(),
             outdir: self.outdir.clone(),
             stoponerror: self.stoponerror,
+            logformat: self.logformat.clone(),
             schedule: self.schedule.clone(),
             error: None,
             running: self.running,
@@ -219,6 +221,7 @@ impl Job {
         let indir = config["indir"].as_str().map(PathBuf::from);
         let outdir = config["outdir"].as_str().map(PathBuf::from);
         let stoponerror = config["stoponerror"].as_bool().unwrap_or(false);
+        let logformat = config["logformat"].as_str().map(String::from);
         Job {
             name,
             path,
@@ -228,6 +231,7 @@ impl Job {
             indir,
             outdir,
             stoponerror,
+            logformat,
             schedule,
             ..Default::default()
         }

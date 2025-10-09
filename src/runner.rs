@@ -198,8 +198,9 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
             }
         }
     }
-    if job.indir.is_some() && results.stdout.is_empty() {
-        results.stdout = Vec::from(format!("Processed {} input files succesfully", args.len()-failures));
+    if job.indir.is_some() && let Some(ref format) = job.logformat {
+        let count = format!("{}", args.len()-failures);
+        results.stdout.append(&mut Vec::from(format.replace("$", &count)));
     }
 
     if job.history {
