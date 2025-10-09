@@ -1,5 +1,5 @@
 use std::{ os::unix::process::ExitStatusExt as _, path::{Path, PathBuf}, process::{ExitStatus, Stdio}, sync::{self, Arc, RwLock}, time::{self, Duration} };
-use tokio::{ fs::{ File, read_dir, rename }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
+use tokio::{ fs::{ File, read_dir, rename, remove_file }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
 
 use crate::{ control, web, Config, Job, Run, Schedule };
 
@@ -165,14 +165,28 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
                 }
                 else { // Without stoponerror any success yields a final success result
                     results.status = Some(status);
-                    if let Some(arg) = arg && let Some(ref outdir) = job.outdir {
-                        let base = match job.workdir { Some(ref dir) => dir.clone(), None => PathBuf::new() };
-                        let out = base.join(outdir);
-                        if !out.is_dir() {
-                            eprintln!("Job {} outdir {} is not a directory", job.path.display(), out.display());
+                    if let Some(arg) = arg {
+                        if let Some(ref outdir) = job.outdir {
+                            let base = match job.workdir { Some(ref dir) => dir.clone(), None => PathBuf::new() };
+                            let out = base.join(outdir);
+                            if !out.is_dir() {
+                                eprintln!("Job {} outdir {} is not a directory", job.path.display(), out.display());
+                                failures += 1;
+                            }
+                            else if let Err(e) = rename(base.join(&arg), base.join(outdir).join(arg.file_name().unwrap())).await {
+                                eprintln!("Job {} failed to move processed file to outdir: {}", job.path.display(), e);
+                                failures += 1;
+                            }
                         }
-                        else if let Err(e) = rename(base.join(&arg), base.join(outdir).join(arg.file_name().unwrap())).await {
-                            eprintln!("Job {} failed to move processed file to outdir: {}", job.path.display(), e);
+                        else {
+                            let dir = match job.workdir {
+                                Some(ref dir) => dir.clone(),
+                                None => PathBuf::new()
+                            };
+                            if let Err(e) = remove_file(dir.join(arg)).await {
+                                eprintln!("Job {} failed to remove processed file: {}", job.path.display(), e);
+                                failures += 1;
+                            }
                         }
                     }
                 }
