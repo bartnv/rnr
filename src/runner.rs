@@ -1,5 +1,5 @@
 use std::{ os::unix::process::ExitStatusExt as _, path::{Path, PathBuf}, process::{ExitStatus, Stdio}, sync::{self, Arc, RwLock}, time::{self, Duration} };
-use tokio::{ fs::{ File, read_dir, rename, remove_file }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
+use tokio::{ fs::{ File, create_dir, read_dir, rename, remove_file }, io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader}, process, sync::{ broadcast, mpsc } };
 
 use crate::{ control, web, Config, Job, Run, Schedule };
 
@@ -126,81 +126,87 @@ async fn run_job(config: sync::Arc<sync::RwLock<Config>>, mut job: Box<Job>) -> 
     rundir.push(job.path.clone());
     rundir.push("runs");
     rundir.push(job.laststart.unwrap().format("%Y-%m-%d %H:%M").to_string());
-    if tokio::fs::create_dir(&rundir).await.is_ok() { job.history = true; }
+    if create_dir(&rundir).await.is_ok() { job.history = true; }
     
     let mut results = Run { start: job.laststart.unwrap(), duration: Some(Duration::new(0, 0)), ..Default::default() };
     if args.is_empty() { // Job indir is empty; nothing to do
         println!("{} [{}] skipped (no input files)", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display());
-        results.stdout = Vec::from("Nothing to process");
         results.status = Some(ExitStatus::from_raw(0));
-        job.lastrun = Some(results);
-        return job;
-    }
-    println!("{} [{}] starting {}{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), executable.display(),
-        match args.first().unwrap().is_some() { false => "", true => &format!(" on {} input files", args.len()) }
-    );
-    let mut failures = 0;
-    for arg in &args {
-        if arg.is_some() && let Some(ref outdir) = job.outdir {
-            // Create a temporary File in outdir to ensure we can create it
-            // Then use tokio::fs::copy and unlink to move the data over
-        }
-        match run_cmd(config.clone(), &mut job, &rundir, &executable, arg.as_deref()).await {
-            Ok((duration, status, mut stdout, mut stderr)) => {
-                if !status.success() && let Some(arg) = arg && stderr.is_empty() {
-                    stderr = Vec::from(format!("Failure on input file \"{}\": {}", arg.display(), status));
-                }
-                results.stdout.append(&mut stdout);
-                results.stderr.append(&mut stderr);
-                if let Some(ref mut dur) = results.duration { *dur += duration; }
-                if !status.success() {
-                    failures += 1;
-                    if job.stoponerror {
-                        results.status = Some(status);
-                        break;
-                    }
-                    if results.status.is_none() {
-                        results.status = Some(status);
-                    }
-                }
-                else { // Without stoponerror any success yields a final success result
-                    results.status = Some(status);
-                    if let Some(arg) = arg {
-                        if let Some(ref outdir) = job.outdir {
-                            let base = match job.workdir { Some(ref dir) => dir.clone(), None => PathBuf::new() };
-                            let out = base.join(outdir);
-                            if !out.is_dir() {
-                                eprintln!("Job {} outdir {} is not a directory", job.path.display(), out.display());
-                                failures += 1;
-                            }
-                            else if let Err(e) = rename(base.join(&arg), base.join(outdir).join(arg.file_name().unwrap())).await {
-                                eprintln!("Job {} failed to move processed file to outdir: {}", job.path.display(), e);
-                                failures += 1;
-                            }
-                        }
-                        else {
-                            let dir = match job.workdir {
-                                Some(ref dir) => dir.clone(),
-                                None => PathBuf::new()
-                            };
-                            if let Err(e) = remove_file(dir.join(arg)).await {
-                                eprintln!("Job {} failed to remove processed file: {}", job.path.display(), e);
-                                failures += 1;
-                            }
-                        }
-                    }
-                }
-            },
-            Err(e) => { // Permanently unable to run job
-                println!("{} [{}] fatal error: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), e);
-                job.error = Some(e);
-                return job;
+        results.stdout = Vec::from("Nothing to process");
+        if job.history {
+            if let Ok(mut file) = File::create(rundir.join("out")).await {
+                let _ = file.write_all(&results.stdout).await;
             }
         }
     }
-    if job.indir.is_some() && let Some(ref format) = job.logformat {
-        let count = format!("{}", args.len()-failures);
-        results.stdout.append(&mut Vec::from(format.replace("$", &count)));
+    else {
+        println!("{} [{}] starting {}{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), executable.display(),
+            match args.first().unwrap().is_some() { false => "", true => &format!(" on {} input files", args.len()) }
+        );
+        let mut failures = 0;
+        for arg in &args {
+            match run_cmd(config.clone(), &mut job, &rundir, &executable, arg.as_deref()).await {
+                Ok((duration, status, mut stdout, mut stderr)) => {
+                    if !status.success() && let Some(arg) = arg && stderr.is_empty() {
+                        stderr = Vec::from(format!("Failure on input file \"{}\": {}", arg.display(), status));
+                    }
+                    results.stdout.append(&mut stdout);
+                    results.stderr.append(&mut stderr);
+                    if let Some(ref mut dur) = results.duration { *dur += duration; }
+                    if !status.success() {
+                        failures += 1;
+                        if job.stoponerror {
+                            results.status = Some(status);
+                            break;
+                        }
+                        if results.status.is_none() {
+                            results.status = Some(status);
+                        }
+                    }
+                    else { // Without stoponerror any success yields a final success result
+                        results.status = Some(status);
+                        if let Some(arg) = arg {
+                            if let Some(ref outdir) = job.outdir {
+                                let base = match job.workdir { Some(ref dir) => dir.clone(), None => PathBuf::new() };
+                                let out = base.join(outdir);
+                                if !out.is_dir() {
+                                    eprintln!("Job {} outdir {} is not a directory", job.path.display(), out.display());
+                                    failures += 1;
+                                }
+                                else if let Err(e) = rename(base.join(&arg), base.join(outdir).join(arg.file_name().unwrap())).await {
+                                    eprintln!("Job {} failed to move processed file to outdir: {}", job.path.display(), e);
+                                    failures += 1;
+                                }
+                            }
+                            else {
+                                let dir = match job.workdir {
+                                    Some(ref dir) => dir.clone(),
+                                    None => PathBuf::new()
+                                };
+                                if let Err(e) = remove_file(dir.join(arg)).await {
+                                    eprintln!("Job {} failed to remove processed file: {}", job.path.display(), e);
+                                    failures += 1;
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(e) => { // Permanently unable to run job
+                    println!("{} [{}] fatal error: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), job.path.display(), e);
+                    job.error = Some(e);
+                    return job;
+                }
+            }
+        }
+        if job.indir.is_some() && let Some(ref format) = job.logformat {
+            let mut line = Vec::from(format.replace("$", &format!("{}", args.len()-failures)));
+            if job.history {
+                if let Ok(mut file) = File::options().create(true).append(true).open(rundir.join("out")).await {
+                    let _ = file.write_all(&line).await;
+                }
+            }
+            results.stdout.append(&mut line);
+        }
     }
 
     if job.history {
