@@ -221,7 +221,7 @@ impl Job {
         let indir = config["indir"].as_str().map(PathBuf::from);
         let outdir = config["outdir"].as_str().map(PathBuf::from);
         let stoponerror = config["stoponerror"].as_bool().unwrap_or(false);
-        let logformat = config["logformat"].as_str().map(String::from);
+        let logformat = config["logformat"].as_str().map(|str| format!("{}\n", str));
         Job {
             name,
             path,
